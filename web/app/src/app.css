@@ -1,0 +1,312 @@
+/* CalcBJ web: the Windows app's colours as tokens (plus a dark variant), and the shared layout. */
+:root {
+  color-scheme: light dark;
+  --nav-bg: #13202a;
+  --nav-hover: #1d2f3c;
+  --nav-text: #b4c2ce;
+  --nav-active: #25a36f;
+  --accent: #1f8f5f;
+  --accent-dark: #17734c;
+  --accent-soft: #e2f3ea;
+  --on-accent: #ffffff;
+  --bg: #f1f3f6;
+  --card: #ffffff;
+  --border: #dce2e8;
+  --text: #1c2833;
+  --muted: #687886;
+  --good: #1f8f5f;
+  --bad: #c0392b;
+  --bad-dark: #a0281e;
+  --warn: #9a6412;
+  --warn-bg: #fff3d6;
+  --info: #2c66a8;
+  --info-bg: #e7f0fa;
+  --grid-header: #f0f3f6;
+  --grid-alt: #fafbfc;
+  --input-bg: #ffffff;
+  --cell-hit: #e9eef2;
+  --cell-stand: #ffe7a3;
+  --cell-double: #b5e4bf;
+  --cell-split: #bcd7ff;
+  --cell-surrender: #f5bdbd;
+  --cell-text: #1c2833;
+  --index-mark: #c95f0f;
+  /* Charts (validated with the dataviz palette script against the card surfaces). */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-negative: #e34948;
+  --chart-grid: #e8ecf0;
+  --chart-axis: #b9c3cc;
+  --radius: 8px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e161d;
+    --card: #16212a;
+    --border: #2a3945;
+    --text: #e2e8ed;
+    --muted: #93a4b2;
+    --accent: #23a26c;
+    --accent-dark: #1b8558;
+    --accent-soft: #163a2a;
+    --good: #3ccb8b;
+    --bad: #ff7466;
+    --bad-dark: #e0574a;
+    --warn: #f2b84b;
+    --warn-bg: #3a2d12;
+    --info: #86b8f2;
+    --info-bg: #172a40;
+    --grid-header: #1b2832;
+    --grid-alt: #18242d;
+    --input-bg: #0f1820;
+    --cell-hit: #2a3742;
+    --cell-stand: #6d5a1c;
+    --cell-double: #2c5e3a;
+    --cell-split: #2d4d7a;
+    --cell-surrender: #7c3535;
+    --cell-text: #eef2f5;
+    --index-mark: #ffa25a;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-negative: #e66767;
+    --chart-grid: #223140;
+    --chart-axis: #3a4b59;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+}
+
+body {
+  font: 14px/1.45 var(--font);
+  background: var(--bg);
+  color: var(--text);
+  -webkit-text-size-adjust: 100%;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+.startup-error {
+  margin: 40px auto;
+  max-width: 560px;
+  padding: 0 16px;
+  color: var(--bad);
+}
+
+/* ---------------- controls ---------------- */
+
+.input,
+select {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  min-height: 32px;
+  max-width: 100%;
+}
+
+.input {
+  text-align: right;
+}
+
+.input:focus,
+select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.input.invalid {
+  border-color: var(--bad);
+}
+
+.input:disabled,
+select:disabled {
+  opacity: 0.55;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 6px;
+  padding: 6px 12px;
+  min-height: 34px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--grid-header);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: var(--accent-dark);
+}
+
+.btn-danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+  font-weight: 600;
+}
+
+.btn-danger:hover {
+  background: var(--bad-dark);
+}
+
+.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+.check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ---------------- page layout ---------------- */
+
+.cols {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, var(--left, 1fr)) minmax(0, var(--right, 1fr));
+  align-items: start;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+@media (max-width: 1180px) {
+  .cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.pre {
+  white-space: pre-line;
+}
+
+.good {
+  color: var(--good);
+}
+
+.bad {
+  color: var(--bad);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.strong {
+  font-weight: 600;
+}
+
+/* ---------------- tables ---------------- */
+
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.table th {
+  background: var(--grid-header);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.table tbody tr:nth-child(even) td {
+  background: var(--grid-alt);
+}
+
+.table .num {
+  text-align: right;
+}
+
+.table .edit {
+  background: var(--accent-soft);
+}
+
+.table tbody tr:nth-child(even) td.edit {
+  background: var(--accent-soft);
+}
+
+.table .input,
+.table select {
+  min-height: 28px;
+  padding: 3px 6px;
+}

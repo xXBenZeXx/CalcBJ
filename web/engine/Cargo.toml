@@ -1,0 +1,24 @@
+[package]
+name = "calcbj-engine"
+version = "0.1.0"
+edition = "2024"
+description = "CalcBJ blackjack engine: combinatorial analysis, index generation, simulation and bet-ramp analysis (port of the C# engine in src/Engine)"
+publish = false
+
+[features]
+# JSON (de)serialisation of rules, counts, ramps and results, for the WebAssembly interface (web/engine-wasm).
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+# The comparison tests simulate millions of rounds; unoptimised builds would take minutes.
+[profile.test]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = true

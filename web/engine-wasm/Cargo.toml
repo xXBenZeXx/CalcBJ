@@ -1,0 +1,19 @@
+[package]
+name = "calcbj-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "WebAssembly interface of the CalcBJ engine for the web app (web/app)"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+calcbj-engine = { path = "../engine", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"

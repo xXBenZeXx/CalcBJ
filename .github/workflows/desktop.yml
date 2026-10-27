@@ -1,0 +1,78 @@
+# Builds the desktop apps on GitHub's Mac and Windows machines and attaches the installers to the release of the
+# version in web/app/src-tauri/tauri.conf.json (Releases on the repository's page).
+name: Desktop apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "!**/*.md"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A newer push replaces a build still running.
+concurrency:
+  group: desktop-apps
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Mac
+            os: macos-latest
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown
+            # One app for Apple silicon and Intel Macs.
+            args: --target universal-apple-darwin
+          - name: Windows
+            os: windows-latest
+            rust-targets: wasm32-unknown-unknown
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            web/engine-wasm -> target
+            web/app/src-tauri -> target
+
+      - name: Install the web app's packages
+        run: npm ci
+        working-directory: web/app
+
+      - name: Build the app and attach the installer to the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: web/app
+          tagName: v__VERSION__
+          releaseName: CalcBJ __VERSION__
+          releaseBody: |
+            Download the file for your computer below (under Assets). Both apps work without an internet connection.
+
+            **Mac** (Apple silicon and Intel, macOS 12 or later): open the `.dmg` file and drag CalcBJ into Applications. The app is not signed with an Apple developer certificate, so the first time macOS won't open it: open System Settings → Privacy & Security, scroll down and click **Open Anyway**.
+
+            **Windows** (10 or 11): run the `-setup.exe` file. If Windows says it protected your PC, click **More info** → **Run anyway**. It installs for your user account only, without administrator rights.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

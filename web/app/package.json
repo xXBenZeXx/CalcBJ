@@ -1,0 +1,29 @@
+{
+  "name": "calcbj-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "CalcBJ in the browser: blackjack advantage calculator (Svelte interface, Rust engine as WebAssembly)",
+  "scripts": {
+    "wasm": "node scripts/build-wasm.mjs",
+    "dev": "npm run wasm && vite",
+    "dev:desktop": "npm run wasm && vite --mode desktop",
+    "build": "npm run wasm && npm run check && vite build",
+    "build:desktop": "npm run wasm && npm run check && vite build --mode desktop",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tauri-apps/cli": "^2.12.4",
+    "@tsconfig/svelte": "^5.0.8",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.7",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.5"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4"
+  }
+}

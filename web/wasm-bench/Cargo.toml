@@ -1,0 +1,16 @@
+[package]
+name = "calcbj-wasm-bench"
+version = "0.1.0"
+edition = "2024"
+description = "Runs the CalcBJ engine as WebAssembly to check its results and speed (see run.mjs)"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calcbj-engine = { path = "../engine" }
+
+[profile.release]
+codegen-units = 1
+lto = true

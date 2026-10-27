@@ -1,0 +1,2 @@
+# Scenario files are compared byte for byte with what the Windows app writes (CRLF line ends).
+*.bjev -text
