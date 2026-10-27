@@ -67,3 +67,26 @@ fn count_systems() {
     }
     c.finish();
 }
+
+/// The fixture's systems start with the C# presets, in order, so the two lists can't drift apart.
+#[test]
+fn presets_match_the_windows_app() {
+    let fx = fixture("counts.json");
+    let mut c = Check::new("presets");
+    for (p, s) in CountSystem::presets().iter().zip(list(&fx["systems"])) {
+        let want = count(&s["count"]);
+        c.eq(&format!("{}: name", p.name), p.name.clone(), want.name.clone());
+        c.eq(&format!("{}: definition", p.name), p.key(), want.key());
+    }
+    c.finish();
+}
+
+/// A true count only means something when the tags sum to zero over a deck (Canfield Expert once counted the 2 as +1).
+#[test]
+fn true_count_presets_are_balanced() {
+    for p in CountSystem::presets() {
+        if matches!(p.metric, CountMetric::TrueCount) {
+            assert!(p.is_balanced(), "{} is used as a true count but has {} per deck", p.name, p.imbalance_per_deck());
+        }
+    }
+}

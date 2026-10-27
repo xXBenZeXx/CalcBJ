@@ -350,7 +350,7 @@ impl CountSystem {
             Self::make("Wong Halves", [-1.0, 0.5, 1.0, 1.0, 1.5, 1.0, 0.5, 0.0, -0.5, -1.0], 0.0, 0.0, TrueCount),
             Self::make("Uston APC", [0.0, 1.0, 2.0, 2.0, 3.0, 2.0, 2.0, 1.0, -1.0, -3.0], 0.0, 0.0, TrueCount),
             Self::make("Revere RPC", [-2.0, 1.0, 2.0, 2.0, 2.0, 2.0, 1.0, 0.0, 0.0, -2.0], 0.0, 0.0, TrueCount),
-            Self::make("Canfield Expert", [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, -1.0, -1.0], 0.0, 0.0, TrueCount),
+            Self::make("Canfield Expert", [0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, -1.0, -1.0], 0.0, 0.0, TrueCount),
             Self::make("Silver Fox", [-1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, -1.0, -1.0], 0.0, 0.0, TrueCount),
             Self::make("KO (Knock-Out)", [-1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, -1.0], 4.0, -4.0, RunningCount),
         ];

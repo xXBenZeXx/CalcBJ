@@ -242,7 +242,7 @@ namespace CalcBJ.Engine
             list.Add(Make("Wong Halves", new double[] { -1, 0.5, 1, 1, 1.5, 1, 0.5, 0, -0.5, -1 }, 0, 0, CountMetric.TrueCount));
             list.Add(Make("Uston APC", new double[] { 0, 1, 2, 2, 3, 2, 2, 1, -1, -3 }, 0, 0, CountMetric.TrueCount));
             list.Add(Make("Revere RPC", new double[] { -2, 1, 2, 2, 2, 2, 1, 0, 0, -2 }, 0, 0, CountMetric.TrueCount));
-            list.Add(Make("Canfield Expert", new double[] { 0, 1, 1, 1, 1, 1, 1, 0, -1, -1 }, 0, 0, CountMetric.TrueCount));
+            list.Add(Make("Canfield Expert", new double[] { 0, 0, 1, 1, 1, 1, 1, 0, -1, -1 }, 0, 0, CountMetric.TrueCount));
             list.Add(Make("Silver Fox", new double[] { -1, 1, 1, 1, 1, 1, 1, 0, -1, -1 }, 0, 0, CountMetric.TrueCount));
             list.Add(Make("KO (Knock-Out)", new double[] { -1, 1, 1, 1, 1, 1, 1, 0, 0, -1 }, 4, -4, CountMetric.RunningCount));
             var red7 = Make("Red Seven", new double[] { -1, 1, 1, 1, 1, 1, 0, 0, 0, -1 }, 0, -2, CountMetric.RunningCount);
