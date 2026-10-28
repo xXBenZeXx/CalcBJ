@@ -292,7 +292,7 @@ namespace CalcBJ.Engine
         readonly int[] baseShoe;
         readonly int[] scratch;
         int pos, rc, roundStart, holeV = -1;
-        bool holeHidden, mustShuffle;
+        bool holeHidden, mustShuffle, freshShoe;
         ulong s0, s1, s2, s3;
         ulong rbuf;
         bool rhave;
@@ -421,7 +421,7 @@ namespace CalcBJ.Engine
             pos = 0;
             rc = irc;
             mustShuffle = false;
-            Shoes++;
+            freshShoe = true;
             if (burn) DrawHidden();
         }
 
@@ -524,7 +524,8 @@ namespace CalcBJ.Engine
             if (best == 21) return 21;
             int cell = soft ? 220 + best * 10 + (up - 1) : h * 10 + (up - 1);
             byte f = Fl(cell);
-            if ((f & Flag.Double) != 0 && (!split || das) && CanDouble(h, soft))
+            // Split aces may be hit (HSA) but not doubled, as in the combinatorial analysis.
+            if ((f & Flag.Double) != 0 && (!split || (das && a != 1)) && CanDouble(h, soft))
             {
                 int c = Draw();
                 h += c; if (c == 1) ace = true;
@@ -587,6 +588,8 @@ namespace CalcBJ.Engine
         void PlayRound()
         {
             if (pos >= cut || mustShuffle) Shuffle();
+            // A shoe counts once a round is dealt from it (not the shuffle that starts each worker).
+            if (freshShoe) { Shoes++; freshShoe = false; }
             roundStart = pos;
             holeHidden = false;
             holeV = -1;

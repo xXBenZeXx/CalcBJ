@@ -66,6 +66,9 @@ export const engine = {
   applyPreset: (rules: Rules, count: CountSystem, ramp: BetRamp, preset: number) =>
     call<RampResult>({ op: "applyPreset", rules, count, ramp, preset }),
   indexRange: (rules: Rules, count: CountSystem) => call<{ min: number; max: number }>({ op: "indexRange", rules, count }),
+  /** The ramp for other rules (another number of decks): a preset again, or a custom ramp row by row by Hi-Lo equivalent. */
+  rampForRules: (from: Rules, rules: Rules, count: CountSystem, ramp: BetRamp, preset: number) =>
+    call<BetRamp>({ op: "rampForRules", from, rules, count, ramp, preset }),
   bins: (sim: SimData) => call<BinStat[]>({ op: "bins", sim }),
   evaluate: (sim: SimData, ramp: BetRamp, unit: number, rph: number, bankroll: number) =>
     call<Evaluation>({ op: "evaluate", sim, ramp, unit, rph, bankroll }),

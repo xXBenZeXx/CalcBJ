@@ -54,7 +54,7 @@ namespace CalcBJ.App
                 Tile(sb, "Player edge", Theme.SignedPct(a.EdgePct / 100, 3), a.EdgePct >= 0);
                 Tile(sb, "SCORE", Theme.F(a.Score, "0.00"), true);
                 Tile(sb, "DI", Theme.F(a.DI, "0.00"), true);
-                Tile(sb, "N0 (rounds)", Theme.F(a.N0, "#,0"), true);
+                Tile(sb, "N0 (rounds)", a.EV > 0 ? Theme.F(a.N0, "#,0") : "never", true);
                 Tile(sb, "Risk of ruin", Theme.Pct(a.ROR, 2), a.ROR < 0.2);
                 Tile(sb, "Bankroll for 5% ROR", Theme.Money0(a.BankrollForRor(0.05)), true);
                 Tile(sb, "Kelly unit", Theme.Money(a.KellyUnit), true);

@@ -231,7 +231,7 @@ namespace CalcBJ.App
             tWin.Set(Theme.Money(a.WinPerHour), Theme.Money(a.WinPer100) + " per 100 rounds  ·  ± " + Theme.Money(a.SeWinPerHour) + " sim error", a.WinPerHour >= 0 ? Theme.Good : Theme.Bad);
             tSd.Set(Theme.Money0(a.SdPerHour), Theme.Money0(a.SdPer100) + " per 100 rounds");
             tEdge.Set(Theme.SignedPct(a.EdgePct / 100, 3), "avg bet " + Theme.Money(a.AvgBetPlayed * State.Unit) + " when playing", a.EdgePct >= 0 ? Theme.Good : Theme.Bad);
-            tScore.Set(Theme.F(a.Score, "0.00"), "DI " + Theme.F(a.DI, "0.00") + "  (win/100 per $10k, Kelly)");
+            tScore.Set(Theme.F(a.Score, "0.00"), "win/100 rds on a $10k Kelly bankroll  ·  DI " + Theme.F(a.DI, "0.00"));
             tN0.Set(a.EV > 0 ? Theme.F(a.N0, "#,0") + " rds" : "never", a.EV > 0 ? "≈ " + Theme.F(a.HoursN0, "#,0") + " hours" : "negative expectation");
             tRor.Set(Theme.Pct(a.ROR, a.ROR < 0.001 ? 4 : 2), "lifetime, " + Theme.Money0(State.Bankroll) + " bankroll", a.ROR > 0.2 ? Theme.Bad : (a.ROR < 0.05 ? Theme.Good : Theme.Text));
             tBank.Set(Theme.Money0(a.BankrollForRor(0.05)), "13.5% ROR: " + Theme.Money0(a.BankrollForRor(0.135)) + "  ·  1%: " + Theme.Money0(a.BankrollForRor(0.01)));

@@ -1,6 +1,6 @@
 [package]
 name = "calcbj-desktop"
-version = "0.1.1"
+version = "0.1.2"
 description = "CalcBJ as a desktop app for Windows and Mac: the web interface and engine in a window of their own"
 edition = "2021"
 publish = false

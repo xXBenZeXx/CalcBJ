@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace CalcBJ.Engine
 {
@@ -24,6 +25,21 @@ namespace CalcBJ.Engine
     }
 
     /// <summary>
+    /// The unseen cards at a known count, for index plays. The player decides after seeing the upcard and their own two
+    /// cards, so the count already includes them: for each deal, the cards left after that upcard and hand are shifted by
+    /// linear regression on the tags until the unseen cards' tags add up to UnseenTags.
+    /// </summary>
+    public sealed class CountModel
+    {
+        /// <summary>[1..10] average tag of each rank.</summary>
+        public double[] Tags;
+        /// <summary>Sum of the tags of the unseen cards.</summary>
+        public double UnseenTags;
+        /// <summary>Number of unseen cards.</summary>
+        public double Unseen;
+    }
+
+    /// <summary>
     /// Combinatorial analysis for one shoe composition. The dealer distribution is exact (with removal) for every
     /// player two-card hand and upcard; the player's own draws use the composition left after those three cards.
     /// Decisions are total-dependent: each cell takes the action with the best probability-weighted EV.
@@ -41,6 +57,8 @@ namespace CalcBJ.Engine
         readonly double[] p = new double[11];
         readonly double[] su = new double[11];
         readonly double[] sp = new double[11];
+        readonly double[] pop = new double[11];
+        readonly double[] tmp = new double[11];
         readonly double[] acc = new double[PlayTable.CellsPerBin * 4];
         readonly double[] accW = new double[PlayTable.CellsPerBin];
         readonly double[] pairAcc = new double[PlayTable.CellsPerBin * 2];
@@ -178,7 +196,52 @@ namespace CalcBJ.Engine
             return n;
         }
 
+        /// <summary>
+        /// The model's unseen cards out of the population left after a deal: q_r = n p_r (1 + (t_r - m) x) with
+        /// x = (s/n - m) / V, where p, m and V are the population's rank shares, mean tag and tag variance. Returns their sum.
+        /// </summary>
+        static double Regress(double[] popl, CountModel model, double[] outc)
+        {
+            double M = 0, st = 0;
+            for (int r = 1; r <= 10; r++) { M += popl[r]; st += popl[r] * model.Tags[r]; }
+            double n = Math.Min(model.Unseen, M);
+            double mean = st / M, V = 0, maxDev = 0;
+            for (int r = 1; r <= 10; r++)
+            {
+                if (popl[r] <= 0) continue;
+                double d = model.Tags[r] - mean;
+                V += popl[r] / M * d * d;
+                maxDev = Math.Max(maxDev, Math.Abs(d));
+            }
+            double x = V > 1e-12 ? (model.UnseenTags / n - mean) / V : 0;
+            if (maxDev > 1e-12)
+            {
+                double lim = 0.9 / maxDev;
+                if (x > lim) x = lim; else if (x < -lim) x = -lim;
+            }
+            double total = 0;
+            for (int r = 1; r <= 10; r++)
+            {
+                double f = 1 + (model.Tags[r] - mean) * x;
+                if (f < 0.02) f = 0.02;
+                double q = n * popl[r] / M * f;
+                if (q > popl[r]) q = popl[r];
+                outc[r] = q;
+                total += q;
+            }
+            return total;
+        }
+
         public CAResult Evaluate(double[] shoe)
+        {
+            return Evaluate(shoe, null);
+        }
+
+        /// <summary>
+        /// Analysis of a round dealt from shoe. With a count model, shoe is the population before the deal and the cards
+        /// each deal leaves unseen come from the model (the index plays at that count); deals are weighted by the shoe.
+        /// </summary>
+        public CAResult Evaluate(double[] shoe, CountModel model)
         {
             const int CPB = PlayTable.CellsPerBin;
             var flags = new byte[CPB];
@@ -200,9 +263,16 @@ namespace CalcBJ.Engine
             for (int u = 1; u <= 10; u++)
             {
                 double pu = shoe[u] / N;
-                for (int r = 1; r <= 10; r++) su[r] = shoe[r];
-                su[u] = Math.Max(0, su[u] - 1);
-                double Nu = N - 1;
+                for (int r = 1; r <= 10; r++) pop[r] = shoe[r];
+                pop[u] = Math.Max(0, pop[u] - 1);
+                double Npop = N - 1;
+                double Nu;
+                if (model == null)
+                {
+                    for (int r = 1; r <= 10; r++) su[r] = pop[r];
+                    Nu = Npop;
+                }
+                else Nu = Regress(pop, model, su);
 
                 // Hit/stand defaults for totals no two-card hand reaches (e.g. multi-card 21).
                 dags[u].Evaluate(su, Nu, mass, dist);
@@ -231,17 +301,28 @@ namespace CalcBJ.Engine
 
                 for (int a = 1; a <= 10; a++)
                 {
-                    double wa = su[a] / Nu;
+                    double wa = pop[a] / Npop;
                     if (wa <= 0) continue;
                     for (int b = a; b <= 10; b++)
                     {
-                        double sb = su[b] - (a == b ? 1 : 0);
+                        double sb = pop[b] - (a == b ? 1 : 0);
                         if (sb <= 0) continue;
-                        double w = wa * sb / (Nu - 1) * (a == b ? 1 : 2);
-                        for (int r = 1; r <= 10; r++) sp[r] = su[r];
-                        sp[a] = Math.Max(0, sp[a] - 1);
-                        sp[b] = Math.Max(0, sp[b] - 1);
-                        double Np = Nu - 2;
+                        double w = wa * sb / (Npop - 1) * (a == b ? 1 : 2);
+                        double Np;
+                        if (model == null)
+                        {
+                            for (int r = 1; r <= 10; r++) sp[r] = pop[r];
+                            sp[a] = Math.Max(0, sp[a] - 1);
+                            sp[b] = Math.Max(0, sp[b] - 1);
+                            Np = Npop - 2;
+                        }
+                        else
+                        {
+                            for (int r = 1; r <= 10; r++) tmp[r] = pop[r];
+                            tmp[a] = Math.Max(0, tmp[a] - 1);
+                            tmp[b] = Math.Max(0, tmp[b] - 1);
+                            Np = Regress(tmp, model, sp);
+                        }
                         double pBJ = u == 1 ? sp[10] / Np : (u == 10 ? sp[1] / Np : 0);
 
                         if (a == 1 && b == 10)
@@ -327,9 +408,11 @@ namespace CalcBJ.Engine
                 double bestPlay = Math.Max(nonSplit, canSplit ? c.P : double.NegativeInfinity);
                 if (surrAllowed && c.Rr > bestPlay) f |= Flag.Surrender;
                 flags[pcell] = f;
-                cellEV[pcell * 5 + 4] = canSplit ? c.P : double.NaN;
-                cellEV[pcell * 5] = nonSplit;
+                cellEV[pcell * 5] = c.S;
+                cellEV[pcell * 5 + 1] = c.Hh;
+                if (c.CanD) cellEV[pcell * 5 + 2] = c.D;
                 if (surrAllowed) cellEV[pcell * 5 + 3] = c.Rr;
+                cellEV[pcell * 5 + 4] = canSplit ? c.P : double.NaN;
             }
 
             // Pass 3: expectation of the resulting strategy.
@@ -356,11 +439,197 @@ namespace CalcBJ.Engine
             return res;
         }
 
-        /// <summary>Off-the-top player expectation for the rules with optimal total-dependent basic strategy.</summary>
+        /// <summary>Off-the-top player expectation for the rules with optimal total-dependent basic strategy, played as the
+        /// simulator plays it (see ExactOffTop).</summary>
         public static double HouseEdgeOffTop(Rules rules)
         {
             var e = new CAEngine(rules);
-            return e.Evaluate(FullShoe(rules.Decks)).PlayerEV;
+            return e.ExactOffTop(e.Evaluate(FullShoe(rules.Decks)));
+        }
+
+        // ---------------- Exact expectation of a strategy off the top ----------------
+
+        // Raw dealer distributions keyed by game, upcard and the player's cards. Shared by the engines of a thread: the
+        // Game page asks for many rule variants in a row, and most of them deal the same cards.
+        [ThreadStatic] static Dictionary<long, double[]> dealerCache;
+        const int DealerCacheLimit = 1 << 17;
+
+        readonly double[] xc = new double[11];
+        readonly Dictionary<long, double> handMemo = new Dictionary<long, double>();
+        byte[] xFlags;
+        int xUp;
+        long xGame;
+        bool xTakesAll;
+
+        /// <summary>Adds a card of rank r to a hand key (5 bits per rank).</summary>
+        static long WithCard(long cards, int r)
+        {
+            return cards + (1L << (5 * (r - 1)));
+        }
+
+        double[] RawDealer(long cards, double n)
+        {
+            long key = ((cards * 16 + xUp) << 5) + xGame;
+            double[] d;
+            if (dealerCache.TryGetValue(key, out d)) return d;
+            dags[xUp].Evaluate(xc, n, mass, dist);
+            d = (double[])dist.Clone();
+            if (dealerCache.Count >= DealerCacheLimit) dealerCache.Clear();
+            dealerCache[key] = d;
+            return d;
+        }
+
+        /// <summary>The player stands on total with bet units; peek games leave out the dealer's blackjacks (see ExactOffTop).</summary>
+        double Terminal(long cards, double n, int total, int bet)
+        {
+            double[] d = RawDealer(cards, n);
+            double ev = d[5];
+            for (int k = 0; k < 5; k++)
+            {
+                int t = 17 + k;
+                if (total > t) ev += d[k];
+                else if (total < t) ev -= d[k];
+            }
+            ev *= bet;
+            if (xTakesAll) ev -= bet * d[6];
+            return ev;
+        }
+
+        double Bust(double n, int bet)
+        {
+            if (xTakesAll) return -bet;
+            double pb = xUp == 1 ? xc[10] / n : (xUp == 10 ? xc[1] / n : 0);
+            return -bet * (1 - pb);
+        }
+
+        /// <summary>Value of a hand of three or more cards, played by the flags as the simulator plays it.</summary>
+        double Play(long cards, double n, int h, bool ace)
+        {
+            long key = cards * 16 + xUp;
+            double v;
+            if (handMemo.TryGetValue(key, out v)) return v;
+            bool soft = ace && h <= 11;
+            int best = soft ? h + 10 : h;
+            if (best == 21) v = Terminal(cards, n, 21, 1);
+            else
+            {
+                int cell = soft ? PlayTable.SoftCell(best, xUp) : PlayTable.HardCell(h, xUp);
+                v = (xFlags[cell] & Flag.Stand) != 0 ? Terminal(cards, n, best, 1) : Draw(cards, n, h, ace, 1);
+            }
+            handMemo[key] = v;
+            return v;
+        }
+
+        /// <summary>Takes one card: a hit (bet 1, then plays on) or a double (bet 2, then stands).</summary>
+        double Draw(long cards, double n, int h, bool ace, int bet)
+        {
+            double ev = 0;
+            for (int r = 1; r <= 10; r++)
+            {
+                double cr = xc[r];
+                if (cr <= 0) continue;
+                double pr = cr / n;
+                xc[r] = cr - 1;
+                int h2 = h + r;
+                bool a2 = ace || r == 1;
+                double v;
+                if (h2 > 21) v = Bust(n - 1, bet);
+                else if (bet == 2) v = Terminal(WithCard(cards, r), n - 1, (a2 && h2 <= 11) ? h2 + 10 : h2, 2);
+                else v = Play(WithCard(cards, r), n - 1, h2, a2);
+                ev += pr * v;
+                xc[r] = cr;
+            }
+            return ev;
+        }
+
+        /// <summary>Split EV of a pair exactly as Evaluate works it out (xc holds the cards left after the deal).</summary>
+        double SplitOffTop(int u, int a, double Np, double pBJ, bool peekCond)
+        {
+            for (int r = 1; r <= 10; r++) sp[r] = xc[r];
+            dags[u].Evaluate(sp, Np, mass, dist);
+            double dBJ = 0;
+            if (peekCond) { double nb = 1 - dist[6]; if (nb > 1e-12) for (int k = 0; k < 6; k++) dist[k] /= nb; }
+            else dBJ = dist[6];
+            FillStand(dBJ);
+            for (int r = 1; r <= 10; r++) p[r] = sp[r] / Np;
+            FillDP();
+            double evP = SplitEV(a);
+            if (peekCond && pBJ > 0) evP = -pBJ + (1 - pBJ) * evP;
+            return evP;
+        }
+
+        /// <summary>
+        /// Off-the-top expectation of the strategy in basic (its flags and insurance) with every card the player draws
+        /// taken out of the shoe: hits and doubles follow the flags exactly as the simulator plays them. Evaluate's
+        /// PlayerEV assumes the best play after each hit, with the draw odds fixed after the first three cards, which is
+        /// up to 0.04% too high with one deck. Splits keep Evaluate's approximation. In peek games each deal loses its
+        /// blackjack probability once and the dealer's blackjacks are left out of every later outcome, which is exact
+        /// because the order of the unseen cards doesn't matter.
+        /// </summary>
+        public double ExactOffTop(CAResult basic)
+        {
+            var shoe = FullShoe(R.Decks);
+            if (dealerCache == null) dealerCache = new Dictionary<long, double[]>();
+            xGame = R.Decks * 2 + (R.H17 ? 1 : 0);
+            handMemo.Clear();
+            xFlags = basic.Flags;
+            xTakesAll = R.DealerBJTakesAll;
+            bool surrAllowed = R.Surrender != SurrenderRule.None;
+            bool srBeforePeek = R.SurrenderBeforePeek;
+            bool peekCond = !R.DealerBJTakesAll;
+            double N = Sum(shoe);
+            double evTotal = 0;
+            for (int u = 1; u <= 10; u++)
+            {
+                double pu = shoe[u] / N;
+                if (pu <= 0) continue;
+                xUp = u;
+                for (int r = 1; r <= 10; r++) pop[r] = shoe[r];
+                pop[u] = Math.Max(0, pop[u] - 1);
+                double Npop = N - 1;
+                for (int a = 1; a <= 10; a++)
+                {
+                    double wa = pop[a] / Npop;
+                    if (wa <= 0) continue;
+                    for (int b = a; b <= 10; b++)
+                    {
+                        double sb = pop[b] - (a == b ? 1 : 0);
+                        if (sb <= 0) continue;
+                        double w = wa * sb / (Npop - 1) * (a == b ? 1 : 2);
+                        for (int r = 1; r <= 10; r++) xc[r] = pop[r];
+                        xc[a] = Math.Max(0, xc[a] - 1);
+                        xc[b] = Math.Max(0, xc[b] - 1);
+                        double Np = Npop - 2;
+                        double pBJ = u == 1 ? xc[10] / Np : (u == 10 ? xc[1] / Np : 0);
+                        if (a == 1 && b == 10)
+                        {
+                            evTotal += pu * w * (1 - pBJ) * R.BlackjackPays;
+                            continue;
+                        }
+                        int h0 = a + b;
+                        bool ace0 = a == 1 || b == 1;
+                        bool soft0 = ace0 && h0 + 10 <= 21;
+                        byte pf = a == b ? xFlags[PlayTable.PairCell(a, u)] : (byte)0;
+                        byte tf = xFlags[soft0 ? PlayTable.SoftCell(h0 + 10, u) : PlayTable.HardCell(h0, u)];
+                        double evR = srBeforePeek ? -0.5 : -pBJ - 0.5 * (1 - pBJ);
+                        double ev;
+                        if (surrAllowed && (pf & Flag.Surrender) != 0) ev = evR;
+                        else if ((pf & Flag.Split) != 0) ev = SplitOffTop(u, a, Np, pBJ, peekCond);
+                        else if (surrAllowed && (tf & Flag.Surrender) != 0) ev = evR;
+                        else
+                        {
+                            long cards = WithCard(WithCard(0, a), b);
+                            if ((tf & Flag.Double) != 0 && R.CanDoubleTotal(h0, soft0)) ev = Draw(cards, Np, h0, ace0, 2);
+                            else if ((tf & Flag.Stand) != 0) ev = Terminal(cards, Np, soft0 ? h0 + 10 : h0, 1);
+                            else ev = Draw(cards, Np, h0, ace0, 1);
+                            if (peekCond) ev -= pBJ;
+                        }
+                        evTotal += pu * w * ev;
+                    }
+                }
+            }
+            if (basic.Insure) evTotal += (shoe[1] / N) * basic.InsuranceEV;
+            return evTotal;
         }
     }
 }

@@ -240,14 +240,17 @@ namespace CalcBJ.App
         public static string Money(double v)
         {
             if (double.IsNaN(v) || double.IsInfinity(v)) return "—";
-            string s = Math.Abs(v) >= 1000 ? Math.Abs(v).ToString("#,0", CultureInfo.InvariantCulture) : Math.Abs(v).ToString("0.00", CultureInfo.InvariantCulture);
-            return (v < 0 ? "-$" : "$") + s;
+            // Round to cents first, so $999.996 shows as $1,000 and not $1000.00.
+            double a = Math.Round(Math.Abs(v), 2, MidpointRounding.AwayFromZero);
+            string s = a >= 1000 ? a.ToString("#,0", CultureInfo.InvariantCulture) : a.ToString("0.00", CultureInfo.InvariantCulture);
+            return (v < 0 && a > 0 ? "-$" : "$") + s;
         }
 
         public static string Money0(double v)
         {
             if (double.IsNaN(v) || double.IsInfinity(v)) return "—";
-            return (v < 0 ? "-$" : "$") + Math.Abs(v).ToString("#,0", CultureInfo.InvariantCulture);
+            double a = Math.Round(Math.Abs(v), MidpointRounding.AwayFromZero);
+            return (v < 0 && a > 0 ? "-$" : "$") + a.ToString("#,0", CultureInfo.InvariantCulture);
         }
 
         public static string Pct(double fraction, int decimals)
@@ -272,8 +275,9 @@ namespace CalcBJ.App
 
         public static string Count(long n)
         {
-            if (n >= 1000000000) return (n / 1e9).ToString(n % 1000000000 == 0 ? "0" : "0.##", CultureInfo.InvariantCulture) + "B";
-            if (n >= 1000000) return (n / 1e6).ToString(n % 1000000 == 0 ? "0" : "0.#", CultureInfo.InvariantCulture) + "M";
+            // Values that would round up to 1000 of a unit move to the next unit ("1M", not "1000K").
+            if (n >= 999950000) return (n / 1e9).ToString(n % 1000000000 == 0 ? "0" : "0.##", CultureInfo.InvariantCulture) + "B";
+            if (n >= 999950) return (n / 1e6).ToString(n % 1000000 == 0 ? "0" : "0.#", CultureInfo.InvariantCulture) + "M";
             if (n >= 1000) return (n / 1e3).ToString("0.#", CultureInfo.InvariantCulture) + "K";
             return n.ToString(CultureInfo.InvariantCulture);
         }

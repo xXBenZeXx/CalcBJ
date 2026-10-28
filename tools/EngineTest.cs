@@ -6,11 +6,29 @@ using CalcBJ.Engine;
 
 static class EngineTest
 {
-    static void HE(string label, Rules r)
+    static int failures;
+
+    /// <summary>Prints a failed check; the exit code is 1 when any check failed.</summary>
+    static void Check(bool ok, string what)
+    {
+        if (ok) return;
+        failures++;
+        Console.WriteLine("FAIL: " + what);
+    }
+
+    static double HE(string label, Rules r)
     {
         var sw = Stopwatch.StartNew();
         double ev = CAEngine.HouseEdgeOffTop(r);
         Console.WriteLine("{0,-44} player EV {1,8:0.0000}%   ({2} ms)", label, ev * 100, sw.ElapsedMilliseconds);
+        return ev;
+    }
+
+    /// <summary>A house edge against a published figure (they differ in the second decimal with the split rules).</summary>
+    static void Published(string label, Rules r, double expectedPct)
+    {
+        double ev = HE(label, r) * 100;
+        Check(Math.Abs(ev - expectedPct) <= 0.03, string.Format(CultureInfo.InvariantCulture, "{0}: {1:0.000}% vs published {2:0.00}%", label, ev, expectedPct));
     }
 
     static Rules R(int decks, bool h17, bool das, SurrenderRule sur, int maxSplit, bool rsa)
@@ -20,15 +38,15 @@ static class EngineTest
         return r;
     }
 
-    static void Main(string[] args)
+    static int Main(string[] args)
     {
         Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
         string mode = args.Length > 0 ? args[0] : "ca";
         if (mode == "ca" || mode == "all")
         {
-            HE("8D S17 DAS noSurr SP4", R(8, false, true, SurrenderRule.None, 4, false));
-            HE("6D S17 DAS noSurr SP4", R(6, false, true, SurrenderRule.None, 4, false));
-            HE("6D H17 DAS noSurr SP4", R(6, true, true, SurrenderRule.None, 4, false));
+            Published("8D S17 DAS noSurr SP4", R(8, false, true, SurrenderRule.None, 4, false), -0.43);
+            Published("6D S17 DAS noSurr SP4", R(6, false, true, SurrenderRule.None, 4, false), -0.40);
+            Published("6D H17 DAS noSurr SP4", R(6, true, true, SurrenderRule.None, 4, false), -0.62);
             HE("6D H17 DAS LS SP4", R(6, true, true, SurrenderRule.Late, 4, false));
             HE("6D S17 DAS LS SP4 RSA", R(6, false, true, SurrenderRule.Late, 4, true));
             HE("2D H17 DAS noSurr SP4", R(2, true, true, SurrenderRule.None, 4, false));
@@ -86,12 +104,14 @@ static class EngineTest
                 var done = new ManualResetEvent(false);
                 sim.Finished += (s, e) => done.Set();
                 sim.Start(); done.WaitOne();
-                if (sim.Error != null) { Console.WriteLine(sim.Error); return; }
+                if (sim.Error != null) { Console.WriteLine(sim.Error); return 1; }
                 var d = sim.Snapshot();
                 var flat = Analysis.Evaluate(d, BetRamp.Create(0, 0, 1), 1, 100, 1000);
                 double ca = pt.BasicResult.PlayerEV;
+                double z = (flat.EV - ca) / flat.SeEV;
                 Console.WriteLine("{0,-26} sim {1,8:0.0000}% +- {2:0.0000}%   CA {3,8:0.0000}%   diff {4,7:0.0000}% ({5:0.0} SE)  {6:0.0}M/s",
-                    t.Item1, flat.EV * 100, flat.SeEV * 100, ca * 100, (flat.EV - ca) * 100, (flat.EV - ca) / flat.SeEV, d.Rounds / d.Seconds / 1e6);
+                    t.Item1, flat.EV * 100, flat.SeEV * 100, ca * 100, (flat.EV - ca) * 100, z, d.Rounds / d.Seconds / 1e6);
+                Check(Math.Abs(z) <= 3.5, t.Item1 + ": simulation and analysis differ by " + z.ToString("0.0", CultureInfo.InvariantCulture) + " SE");
             }
         }
         if (mode == "bench")
@@ -200,7 +220,7 @@ static class EngineTest
             sim.Finished += (s, e) => done.Set();
             sim.Start();
             done.WaitOne();
-            if (sim.Error != null) { Console.WriteLine(sim.Error); return; }
+            if (sim.Error != null) { Console.WriteLine(sim.Error); return 1; }
             var d = sim.Snapshot();
             Console.WriteLine("Rounds {0:N0} in {1:0.00}s = {2:0.0}M rounds/s, shoes {3:N0}, emergency {4}", d.Rounds, d.Seconds, d.Rounds / d.Seconds / 1e6, d.Shoes, d.Emergency);
             var ramp = BetRamp.Create(-1, 1, 1);
@@ -219,6 +239,8 @@ static class EngineTest
             Console.WriteLine("1-12 ramp: WR ${0:0.00}/h  SD ${1:0.00}/h  edge {2:0.000}%  DI {3:0.00}  SCORE {4:0.00}  N0 {5:N0}  ROR {6:0.00}%",
                 a.WinPerHour, a.SdPerHour, a.EdgePct, a.DI, a.Score, a.N0, a.ROR * 100);
         }
+        if (failures > 0) Console.WriteLine(failures + " check(s) failed.");
+        return failures > 0 ? 1 : 0;
     }
 
     static void Bench(string label, Rules r, CountSystem cs, StrategyConfig sc, int spots, long rounds, int threads)

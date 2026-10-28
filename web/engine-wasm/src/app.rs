@@ -44,13 +44,17 @@ pub fn metric_for(cs: &CountSystem, r: &Rules, hi_lo: f64) -> f64 {
     if cs.metric == CountMetric::TrueCount { rc / d_mid } else { rc }
 }
 
+/// Most ramp rows: running counts of level-2 systems span many (Uston SS with 8 decks needs about 110 to reach the
+/// equivalent of Hi-Lo +8, where the presets reach their top bet).
+pub const MAX_RAMP_ROWS: i32 = 121;
+
 /// Ramp rows covering about Hi-Lo -3..+8 in this count, keeping the bets of `old` where the rows overlap.
 pub fn reset_ramp_range(cs: &CountSystem, r: &Rules, old: Option<&BetRamp>) -> BetRamp {
     let mut lo = metric_for(cs, r, -3.0).floor() as i32;
     let mut hi = metric_for(cs, r, 8.0).ceil() as i32;
-    if hi - lo > 44 {
+    if hi - lo > MAX_RAMP_ROWS - 1 {
         lo = metric_for(cs, r, -2.0).floor() as i32;
-        hi = lo + 44;
+        hi = lo + MAX_RAMP_ROWS - 1;
     }
     if hi <= lo {
         hi = lo + 1;
@@ -89,6 +93,32 @@ pub fn apply_preset(cs: &CountSystem, r: &Rules, ramp: &mut BetRamp, preset: i32
     preset
 }
 
+/// The ramp for the same count under other rules (another number of decks): a preset is applied again; a custom
+/// ramp is carried over row by row, each row taking the bet of the old row with the nearest Hi-Lo equivalent
+/// (C#: AppState.RampForRules).
+pub fn ramp_for_rules(cs: &CountSystem, from: &Rules, to: &Rules, ramp: &BetRamp, preset: i32) -> BetRamp {
+    let mut r = reset_ramp_range(cs, to, None);
+    for v in r.min..=r.max {
+        let i = (v - r.min) as usize;
+        let hl = hi_lo_equivalent(cs, to, v);
+        if (0..CUSTOM_PRESET).contains(&preset) {
+            r.units[i] = preset_units(preset, hl);
+            continue;
+        }
+        let (mut best, mut best_d) = (ramp.min, f64::MAX);
+        for w in ramp.min..=ramp.max {
+            let d = (hi_lo_equivalent(cs, from, w) - hl).abs();
+            if d < best_d {
+                best_d = d;
+                best = w;
+            }
+        }
+        r.units[i] = ramp.units_at(best);
+        r.hands[i] = ramp.hands_at(best);
+    }
+    r
+}
+
 thread_local! {
     static EOR: RefCell<Option<(String, [f64; 11])>> = const { RefCell::new(None) };
 }
@@ -116,9 +146,9 @@ fn effects_of_removal(r: &Rules) -> [f64; 11] {
     })
 }
 
-fn corr(x: &[f64; 11], y: &[f64; 11], w: &[f64; 11]) -> f64 {
+fn corr(x: &[f64; 20], y: &[f64; 20], w: &[f64; 20]) -> f64 {
     let (mut sw, mut mx, mut my) = (0.0, 0.0, 0.0);
-    for k in 1..=10 {
+    for k in 0..20 {
         sw += w[k];
         mx += w[k] * x[k];
         my += w[k] * y[k];
@@ -126,7 +156,7 @@ fn corr(x: &[f64; 11], y: &[f64; 11], w: &[f64; 11]) -> f64 {
     mx /= sw;
     my /= sw;
     let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
-    for k in 1..=10 {
+    for k in 0..20 {
         let (dx, dy) = (x[k] - mx, y[k] - my);
         sxy += w[k] * dx * dy;
         sxx += w[k] * dx * dx;
@@ -136,12 +166,15 @@ fn corr(x: &[f64; 11], y: &[f64; 11], w: &[f64; 11]) -> f64 {
 }
 
 pub fn count_info(r: &Rules, cs: &CountSystem) -> Value {
-    let eor = effects_of_removal(r);
-    let (mut tags, mut insurance, mut weight) = ([0.0; 11], [0.0; 11], [0.0; 11]);
-    for k in 1..=10 {
-        tags[k] = cs.rank_tag(k);
-        weight[k] = if k == 10 { 4.0 } else { 1.0 };
-        insurance[k] = if k == 10 { -9.0 / 4.0 } else { 1.0 };
+    // Card by card (red and black separately), so counts with red tags such as Red Seven get their real tags.
+    let eor_rank = effects_of_removal(r);
+    let (mut tags, mut eor, mut insurance, mut weight) = ([0.0; 20], [0.0; 20], [0.0; 20], [0.0; 20]);
+    for code in 0..20 {
+        let k = (code >> 1) + 1;
+        tags[code] = cs.tag_of_code(code);
+        eor[code] = eor_rank[k];
+        weight[code] = if k == 10 { 2.0 } else { 0.5 };
+        insurance[code] = if k == 10 { -9.0 / 4.0 } else { 1.0 };
     }
     json!({
         "scale": cs.scale(),

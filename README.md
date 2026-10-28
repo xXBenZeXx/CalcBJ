@@ -3,7 +3,7 @@
 A Windows desktop tool for card counters: enter the game, pick a count and bet ramp, and get win rate,
 standard deviation, SCORE, N0, risk of ruin, bankroll requirements and optimal bets.
 
-**Run:** `dist\CalcBJ.exe` (single file, ~210 KB). Needs only the .NET Framework 4.8 that ships with Windows 10/11.
+**Run:** `dist\CalcBJ.exe` (single file, ~230 KB). Needs only the .NET Framework 4.8 that ships with Windows 10/11.
 
 **Mac and Windows desktop app:** the installers (`.dmg` for Mac, `-setup.exe` for Windows) are on the GitHub
 repository's Releases page; see [Web and desktop version](#web-and-desktop-version).
@@ -18,7 +18,7 @@ repository's Releases page; see [Web and desktop version](#web-and-desktop-versi
 | Bet ramp & results | Edit units and hands per count (0 = wong out). Win rate, SD, edge, SCORE, DI, N0, ROR, bankroll for 5%/13.5%/1% ROR, Kelly unit, certainty equivalent — all instant. Presets, linear ramps and an optimiser (max SCORE within a spread, or Kelly for your bankroll, optional wonging and multiple hands). |
 | Bankroll & risk | Lifetime and trip risk of ruin, chance of a losing trip, percentile outcomes, ROR curve, result bands over time. |
 | Charts | Count frequencies vs. advantage, bets vs. advantage, contribution by count, result distribution. |
-| Sensitivity sweep | Re-simulate across penetration, decks, spots or index set; or the optimal SCORE for each max bet. |
+| Sensitivity sweep | Re-simulate across penetration, decks, spots or index set; or the optimal SCORE for each max bet. For running and unbalanced counts (KO, Red Seven, Uston SS), whose values mean something else with another number of decks, each deck count gets its own index range and ramp (the preset again, or your ramp mapped by Hi-Lo equivalent). |
 | Compare games | Snapshot scenarios and compare them side by side (best value highlighted). |
 
 Scenarios save to `.bjev` files (including simulation results); reports export to HTML. Shortcuts: F5 run, Esc stop, Ctrl+S, Ctrl+O.
@@ -28,17 +28,26 @@ Scenarios save to `.bjev` files (including simulation results); reports export t
 * **Combinatorial engine** (`src/Engine/Combinatorial.cs`, `DealerDag.cs`): exact dealer probabilities with card
   removal for every player two-card hand and upcard (the dealer's draws are enumerated as multisets, so this is fast:
   ~1–3 ms per full analysis), optimal hit/stand/double/split (with resplits)/surrender, total-dependent decisions.
-* **Index generation** (`src/Engine/Strategy.cs`): for each count value the expected composition of the unseen cards is
-  estimated by linear regression on the tags, at mid-shoe depth; the full analysis of that composition gives the best
-  play at that count. For Hi-Lo this reproduces the published I18/Fab 4 numbers to within a point (about half a point lower
-  with floored true counts, which is what the simulator uses).
+  The house edge off the top then plays that strategy exactly: hits and doubles with full card removal for every
+  hand (splits keep the analysis's approximation).
+* **Index generation** (`src/Engine/Strategy.cs`): a play's index is the count at which the player decides, which
+  includes the player's cards and the dealer's upcard. So for each count value and each hand, those cards are taken
+  out of the shoe and the rest is estimated by linear regression on the tags, to the composition whose count (with
+  the cards on the table) is that value. The number of unseen cards and their average count in each count bin come
+  from the distribution of the count over the shoe. The full analysis of that composition gives the best play at
+  that count. For Hi-Lo, 6 decks S17, all 22 I18 + Fab 4 indices are within one point of the published numbers, which
+  are for unfloored true counts. The simulator floors (TC 0 means 0 to 0.99), so 16 v T, for example, stands from +1.
+  Simulating 18 such plays count by count in 1, 2 and 6 decks gives the generated decision at every count but one
+  borderline one (a 0.05% difference).
 * **Simulator** (`src/Engine/Simulator.cs`): real shoes, all spots, peek/no-peek, insurance, surrender, splits; every
   decision uses the count at that moment. Results are tallied exactly per count bin, so bet ramps never need re-simulation.
 * **Analysis** (`src/Engine/Analysis.cs`): ramp evaluation, multi-hand covariance, ROR (exponential and trip/reflection
   formulas), Kelly/SCORE optimiser.
 
-Validation (see `tools/EngineTest.cs`): 6D S17 DAS −0.40%, 6D H17 DAS −0.62%, 8D −0.43% (matches published figures);
-shuffle-every-round simulations agree with the combinatorial engine within ~0.01% for shoe games.
+Validation (`tools/EngineTest.cs`, which exits with code 1 when a check fails): the house edge for 8D, 6D S17 and
+6D H17 (DAS, no surrender) is 0.435%, 0.410% and 0.622%, within 0.03% of published figures (`ca`). For 1 to 8
+decks and the other rule variants, 200 million shuffle-every-round rounds agree with the off-the-top analysis
+within 2 SE (`offtop`).
 
 ## Build
 
@@ -59,7 +68,7 @@ Output: `dist\CalcBJ.exe`. If a copy is running, the build renames it to `CalcBJ
 * Pages use small custom layout containers (`ArrangePanel`, `VStack`, `FieldGrid`, `TileGrid`) that measure every
   control once; nested auto-size TableLayoutPanels made opening the window take ~6 s.
 
-Tests: `tools\EngineTest.cs` (engine checks: `ca`, `idx`, `sim`, `offtop`, `misc`) and `tools\UiTest.cs`
+Tests: `tools\EngineTest.cs` (engine checks: `ca` and `offtop` fail with exit code 1, `idx`, `sim`, `misc` print) and `tools\UiTest.cs`
 (drives the real UI in-process; compile with all `src` files and `/main:UiTest`).
 
 ## Web and desktop version

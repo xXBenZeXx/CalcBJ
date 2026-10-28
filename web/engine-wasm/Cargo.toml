@@ -11,7 +11,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 calcbj-engine = { path = "../engine", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: decimals such as a 20.2% penetration reach the engine exactly as the C# app passes them.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [profile.release]
 codegen-units = 1

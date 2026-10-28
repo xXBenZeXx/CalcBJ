@@ -111,6 +111,7 @@ namespace CalcBJ.App
             var cs = State.Count.Clone();
             var sc = CloneStrategy(State.Strategy);
             var ramp = State.Ramp.Clone();
+            int preset = State.RampPreset;
             int spots = State.Spots;
             double unit = State.Unit, rph = State.RoundsPerHour, bank = State.Bankroll;
             bool autoRph = State.AutoRoundsPerHour;
@@ -141,10 +142,23 @@ namespace CalcBJ.App
                         {
                             var r2 = rules.Clone();
                             var sc2 = CloneStrategy(sc);
+                            var ramp2 = ramp;
                             int sp = spots;
                             double rph2 = rph;
                             if (p == 0) { r2.Penetration = v / 100.0; pt.Label = v.ToString("0.#", CultureInfo.InvariantCulture) + "%"; }
-                            else if (p == 1) { r2.Decks = Math.Max(1, Math.Min(8, (int)v)); pt.Label = r2.Decks + "D"; }
+                            else if (p == 1)
+                            {
+                                r2.Decks = Math.Max(1, Math.Min(8, (int)v));
+                                pt.Label = r2.Decks + "D";
+                                if (AppState.DependsOnDecks(cs))
+                                {
+                                    // As on the Game page: the index range and the ramp move with the number of decks.
+                                    int ilo, ihi;
+                                    AppState.IndexRangeFor(cs, r2, out ilo, out ihi);
+                                    sc2.IndexMin = ilo; sc2.IndexMax = ihi;
+                                    ramp2 = AppState.RampForRules(cs, rules, r2, ramp, preset);
+                                }
+                            }
                             else if (p == 2) { sp = Math.Max(1, Math.Min(7, (int)v)); if (autoRph) rph2 = AppState.DefaultRoundsPerHour(sp); pt.Label = sp + " spots"; }
                             else { sc2.Mode = (IndexMode)Math.Max(0, Math.Min(3, (int)v)); pt.Label = IndexNames[(int)sc2.Mode]; }
                             var table = StrategyBuilder.Build(r2, cs, sc2);
@@ -167,7 +181,7 @@ namespace CalcBJ.App
                             d.Metric = cs.Metric;
                             d.Threads = threads;
                             if (!cancel) State.Remember(d);
-                            pt.R = Analysis.Evaluate(d, ramp, unit, rph2, bank);
+                            pt.R = Analysis.Evaluate(d, ramp2, unit, rph2, bank);
                         }
                         lock (points) points.Add(pt);
                         BeginInvoke(new Action(() => AddRow(pt, values.Count)));

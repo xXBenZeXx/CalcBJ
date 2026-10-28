@@ -265,7 +265,7 @@
           <Tile
             title="SCORE"
             value={fixed(a.score, 2)}
-            sub={`DI ${fixed(a.di, 2)}  (win/100 per $10k, Kelly)`}
+            sub={`win/100 rds on a $10k Kelly bankroll  ·  DI ${fixed(a.di, 2)}`}
             tip="Win rate per 100 rounds for a $10,000 bankroll bet at full Kelly with this ramp shape (= DI²). Compares games independent of bet size."
           />
           <Tile

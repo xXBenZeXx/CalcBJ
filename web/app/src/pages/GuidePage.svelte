@@ -31,20 +31,24 @@
 
     <Card title="How indices are computed">
       <p>
-        For every count value the program estimates the average composition of the unseen cards (a linear regression of the
-        composition on the count, using your tags) at mid-shoe depth, then runs a full combinatorial analysis of that
-        composition: exact dealer probabilities with card removal for every two-card hand, optimal hitting, doubling,
-        splitting (with resplits) and surrender. The best play at each count becomes the index. Index numbers follow your
-        rounding method: with floored true counts they come out about half a point lower than tables that assume exact
-        counts.
+        An index is the count at the moment you decide, which includes your cards and the dealer's upcard. So for every
+        count value and hand, the program takes those cards out of the shoe and estimates the average make-up of the
+        remaining cards when the count, including the cards on the table, has that value (a linear regression of the
+        composition on the count, using your tags); how deep in the shoe that count usually comes up sets the number of
+        unseen cards. Then it
+        runs a full combinatorial analysis of that composition: exact dealer probabilities with card removal for every
+        two-card hand, optimal hitting, doubling, splitting (with resplits) and surrender. The best play at each count
+        becomes the index. Index numbers follow your rounding method: with floored true counts (TC 0 means 0 to 0.99) some
+        come out a point higher than tables that assume exact counts; 16 v T, for example, stands from +1.
       </p>
     </Card>
 
     <Card title="Accuracy">
       <p>
-        The simulator is checked against the combinatorial engine on shuffle-every-round games (agreement within ~0.01% for
-        shoe games). Typical 6-deck house edges match published figures (6D S17 DAS 0.40%, H17 0.62%). This version uses the
-        same engine as the Windows app, tested to give identical results. Precision of a simulated win rate is shown as ± one
+        The basic strategy expectation off the top plays the computed strategy exactly, with card removal for every hit and
+        double, and agrees with shuffle-every-round simulations within two standard errors for 1 to 8 decks. House edges
+        match published figures (6D S17 DAS 0.41%, H17 0.62%). This version uses the same engine as the Windows app, tested
+        to give identical results. Precision of a simulated win rate is shown as ± one
         standard error; use more rounds to shrink it. Strategy is total-dependent (by hand total, not exact cards).
       </p>
     </Card>

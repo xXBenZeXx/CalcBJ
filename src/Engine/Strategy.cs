@@ -124,6 +124,63 @@ namespace CalcBJ.Engine
             }
         }
 
+        /// <summary>
+        /// Where the decisions of each count bin fall in the shoe: the expected number of unseen cards (unseen) and the
+        /// expected average tag of the unseen cards (unseenMean), for decisions spread evenly over the dealt part of the
+        /// shoe, with the running count binned exactly as the simulator does. Running counts move in whole cards and true
+        /// counts cluster towards zero, so a bin's midpoint is a poor stand-in for the counts in it, most of all with one
+        /// or two decks. Bins that never occur get NaN.
+        /// </summary>
+        public static void BinMoments(Rules rules, CountSystem cs, double[] unseen, double[] unseenMean)
+        {
+            int N = rules.TotalCards;
+            int scale = cs.Scale();
+            int irc = (int)Math.Round(cs.Irc(rules.Decks) * scale);
+            double mu = 0, m2 = 0;
+            for (int code = 0; code < 20; code++)
+            {
+                int rank = (code >> 1) + 1;
+                double share = (rank == 10 ? 8.0 : 2.0) / 52.0;
+                double t = Math.Round(cs.TagOfCode(code) * scale);
+                mu += share * t;
+                m2 += share * t * t;
+            }
+            double var1 = m2 - mu * mu;
+            double total = mu * N;
+            var w = new double[PlayTable.NumBins];
+            var wn = new double[PlayTable.NumBins];
+            var wm = new double[PlayTable.NumBins];
+            int last = Math.Max(3, Math.Min(N - 2, (int)Math.Round(N * rules.Penetration)));
+            for (int k = 3; k <= last; k++)
+            {
+                // Seen cards' scaled tag sum: k cards drawn without replacement from the shoe.
+                int n = N - k;
+                double mean = k * mu;
+                double sd = Math.Sqrt(Math.Max(0, k * var1 * n / (N - 1.0)));
+                int s0 = (int)Math.Floor(mean - 6 * sd), s1 = (int)Math.Ceiling(mean + 6 * sd);
+                double z = 0;
+                for (int s = s0; s <= s1; s++) z += sd > 0 ? Math.Exp(-0.5 * (s - mean) * (s - mean) / (sd * sd)) : (s == s0 ? 1 : 0);
+                if (z <= 0) continue;
+                for (int s = s0; s <= s1; s++)
+                {
+                    double pr = (sd > 0 ? Math.Exp(-0.5 * (s - mean) * (s - mean) / (sd * sd)) : (s == s0 ? 1 : 0)) / z;
+                    if (pr <= 0) continue;
+                    // The hole card is dealt but unseen: the simulator's count uses the cards left after it.
+                    int v = Simulator.MetricValue(cs, scale, irc + s, n - 1);
+                    if (v < PlayTable.BinMin) v = PlayTable.BinMin; else if (v > PlayTable.BinMax) v = PlayTable.BinMax;
+                    int b = v - PlayTable.BinMin;
+                    w[b] += pr;
+                    wn[b] += pr * n;
+                    wm[b] += pr * (total - s) / scale / n;
+                }
+            }
+            for (int b = 0; b < PlayTable.NumBins; b++)
+            {
+                unseen[b] = w[b] > 1e-12 ? wn[b] / w[b] : double.NaN;
+                unseenMean[b] = w[b] > 1e-12 ? wm[b] / w[b] : double.NaN;
+            }
+        }
+
         /// <summary>Converts a betting/playing count value to the balanced-equivalent true count at mid depth.</summary>
         public static double TcEquivalent(CountSystem cs, Rules r, double metricValue)
         {
@@ -184,6 +241,7 @@ namespace CalcBJ.Engine
 
             var basicEngine = new CAEngine(rules);
             pt.BasicResult = basicEngine.Evaluate(CAEngine.FullShoe(rules.Decks));
+            pt.BasicResult.PlayerEV = basicEngine.ExactOffTop(pt.BasicResult);
             pt.Basic = pt.BasicResult.Flags;
 
             int lo = Math.Max(PlayTable.BinMin, Math.Min(sc.IndexMin, sc.IndexMax));
@@ -194,10 +252,33 @@ namespace CalcBJ.Engine
             {
                 perBin = new CAResult[span];
                 double dMid = MidDepthDecks(rules);
+                var full = CAEngine.FullShoe(rules.Decks);
+                var tags = new double[11];
+                for (int r = 1; r <= 10; r++) tags[r] = cs.RankTag(r);
+                double totalTags = cs.ImbalancePerDeck() * rules.Decks, irc = cs.Irc(rules.Decks);
+                var unseen = new double[PlayTable.NumBins];
+                var unseenMean = new double[PlayTable.NumBins];
+                BinMoments(rules, cs, unseen, unseenMean);
                 Parallel.For(0, span, () => new CAEngine(rules), (i, state, eng) =>
                 {
-                    double tcEq = TcEquivalent(cs, rules, Representative(cs, lo + i));
-                    perBin[i] = eng.Evaluate(ShiftedShoe(cs, tcEq, dMid));
+                    // The count when the player decides includes the upcard and their cards (see CountModel).
+                    var model = new CountModel();
+                    model.Tags = tags;
+                    int b = lo + i - PlayTable.BinMin;
+                    if (!double.IsNaN(unseen[b]))
+                    {
+                        model.Unseen = unseen[b];
+                        model.UnseenTags = unseenMean[b] * unseen[b];
+                    }
+                    else
+                    {
+                        // A count this game never reaches: extend from the bin's representative value at mid depth.
+                        double rep = Representative(cs, lo + i);
+                        double rc = cs.Metric == CountMetric.TrueCount ? rep * dMid : rep;
+                        model.Unseen = 52 * dMid;
+                        model.UnseenTags = totalTags - (rc - irc);
+                    }
+                    perBin[i] = eng.Evaluate(full, model);
                     return eng;
                 }, eng => { });
                 pt.PerBin = perBin;
@@ -339,9 +420,18 @@ namespace CalcBJ.Engine
             {
                 info.AtOrAbove = false; info.Threshold = maxD; info.Condition = "at " + Signed(maxD) + " or less";
             }
-            else if (minD == lo && maxD == hi)
+            else if (minD == lo && maxD == hi && count == hi - lo + 1)
             {
                 info.AtOrAbove = true; info.Threshold = lo; info.Condition = "always";
+            }
+            else if (minD == lo && maxD == hi)
+            {
+                // Deviates at both ends of the range: name the two ends, e.g. "at -4 or less, and at +10 or more".
+                int lowEnd = lo, highStart = hi;
+                while (lowEnd + 1 <= hi && (pt.FlagsAt(lowEnd + 1, cell) & mask) != 0 != basic) lowEnd++;
+                while (highStart - 1 >= lo && (pt.FlagsAt(highStart - 1, cell) & mask) != 0 != basic) highStart--;
+                info.AtOrAbove = false; info.Threshold = lowEnd;
+                info.Condition = "at " + Signed(lowEnd) + " or less, and at " + Signed(highStart) + " or more";
             }
             else
             {

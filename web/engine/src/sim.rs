@@ -306,6 +306,7 @@ pub struct SimWorker {
     hole_v: i32,
     hole_hidden: bool,
     must_shuffle: bool,
+    fresh_shoe: bool,
     rng: [u64; 4],
     rbuf: u64,
     rhave: bool,
@@ -396,6 +397,7 @@ impl SimWorker {
             hole_v: -1,
             hole_hidden: false,
             must_shuffle: false,
+            fresh_shoe: false,
             rng,
             rbuf: 0,
             rhave: false,
@@ -470,7 +472,7 @@ impl SimWorker {
         self.pos = 0;
         self.rc = self.irc;
         self.must_shuffle = false;
-        self.shoes += 1;
+        self.fresh_shoe = true;
         if self.burn {
             self.draw_hidden();
         }
@@ -584,7 +586,8 @@ impl SimWorker {
         }
         let mut cell = if soft { 220 + best * 10 + (up - 1) } else { h * 10 + (up - 1) };
         let mut f = self.fl(cell as usize);
-        if (f & flag::DOUBLE) != 0 && (!split || self.das) && self.can_double(h, soft) {
+        // Split aces may be hit (HSA) but not doubled, as in the combinatorial analysis.
+        if (f & flag::DOUBLE) != 0 && (!split || (self.das && a != 1)) && self.can_double(h, soft) {
             let c = self.draw();
             h += c;
             if c == 1 {
@@ -668,6 +671,11 @@ impl SimWorker {
     fn play_round(&mut self) {
         if self.pos >= self.cut || self.must_shuffle {
             self.shuffle();
+        }
+        // A shoe counts once a round is dealt from it (not the shuffle that starts each worker).
+        if self.fresh_shoe {
+            self.shoes += 1;
+            self.fresh_shoe = false;
         }
         self.round_start = self.pos;
         self.hole_hidden = false;

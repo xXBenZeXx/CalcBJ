@@ -123,7 +123,7 @@ namespace CalcBJ.App
             double mu = a.EV * unit, vr = a.Var * unit * unit;          // per observed round, dollars
             double n = State.TripHours * a.RoundsPerHour;
             double exp = mu * n, sd = Math.Sqrt(vr * n);
-            double maxBet = State.Ramp.MaxUnits() * unit;
+            double maxBet = State.Ramp.MaxBet() * unit;   // all hands of the top bet
 
             tRor.Set(Theme.Pct(a.ROR, a.ROR < 0.001 ? 4 : 2), "with " + Theme.Money0(State.Bankroll), a.ROR > 0.2 ? Theme.Bad : (a.ROR < 0.05 ? Theme.Good : Theme.Text));
             tTripExp.Set(Theme.Money0(exp), "± " + Theme.Money0(sd) + " (1 SD) over " + Theme.F(State.TripHours, "#,0") + " h", exp >= 0 ? Theme.Good : Theme.Bad);

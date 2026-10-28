@@ -163,21 +163,35 @@ namespace CalcBJ.Engine
             return 0.5 * (Tags[ri] + RedTags[ri]);
         }
 
-        /// <summary>Smallest multiplier that makes every tag an integer.</summary>
+        /// <summary>Largest multiplier the simulator works with; the count page keeps entries on a grid that fits it.</summary>
+        public const int MaxScale = 60;
+
+        /// <summary>
+        /// Smallest multiplier that makes every tag and the initial running count integers, so the simulator counts exactly
+        /// the entered values (MaxScale when nothing up to it does).
+        /// </summary>
         public int Scale()
         {
-            int[] candidates = { 1, 2, 3, 4, 5, 10 };
-            foreach (int s in candidates)
+            for (int s = 1; s < MaxScale; s++)
             {
-                bool ok = true;
-                for (int code = 0; code < 20 && ok; code++)
-                {
-                    double v = TagOfCode(code) * s;
-                    if (Math.Abs(v - Math.Round(v)) > 1e-9) ok = false;
-                }
+                bool ok = Whole(IrcBase * s) && Whole(IrcPerDeck * s);
+                for (int code = 0; code < 20 && ok; code++) ok = Whole(TagOfCode(code) * s);
                 if (ok) return s;
             }
-            return 10;
+            return MaxScale;
+        }
+
+        static bool Whole(double v)
+        {
+            return !(Math.Abs(v - Math.Round(v)) > 1e-9);   // a NaN doesn't rule a scale out (as before)
+        }
+
+        /// <summary>Rounds an entered tag or initial count to the grid the simulator can count exactly: thirds, else 0.05.</summary>
+        public static double Snap(double v)
+        {
+            double third = Math.Round(v * 3) / 3;
+            if (Math.Abs(v - third) < 0.005) return third;
+            return Math.Round(v * 20) / 20;
         }
 
         /// <summary>Sum of tags over one 52-card deck.</summary>
@@ -228,6 +242,19 @@ namespace CalcBJ.Engine
             var c = new CountSystem();
             c.Name = name; c.Tags = tags; c.IrcBase = ircBase; c.IrcPerDeck = ircPerDeck; c.Metric = metric;
             return c;
+        }
+
+        /// <summary>
+        /// Brings a count saved by an older version up to date where a preset's definition has since been corrected:
+        /// before 0.1.1 Canfield Expert counted the 2 as +1. Edited counts are named "Custom", so a preset name with the old
+        /// tags can only come from such a file or saved settings.
+        /// </summary>
+        public static void UpgradeSaved(CountSystem cs)
+        {
+            if (cs == null || cs.Name != "Canfield Expert" || cs.RedTags != null || cs.Tags == null || cs.Tags.Length != 10) return;
+            double[] old = { 0, 1, 1, 1, 1, 1, 1, 0, -1, -1 };
+            for (int i = 0; i < 10; i++) if (cs.Tags[i] != old[i]) return;
+            cs.Tags[1] = 0;
         }
 
         public static List<CountSystem> Presets()

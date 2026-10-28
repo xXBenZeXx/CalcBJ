@@ -1,7 +1,10 @@
 //! Combinatorial analysis for one shoe composition (C#: Combinatorial.cs).
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use crate::dealer::{self, DealerDag};
-use crate::num::dmax;
+use crate::num::{dmax, dmin};
 use crate::strategy::{CELLS_PER_BIN, hard_cell, pair_cell, soft_cell};
 use crate::types::{Rules, SurrenderRule};
 
@@ -25,6 +28,75 @@ pub struct CaResult {
     /// Average EV of each option per cell: `[cell * 5 + k]`, k = stand, hit, double, surrender, split. NaN where not
     /// applicable.
     pub cell_ev: Vec<f64>,
+}
+
+/// The unseen cards at a known count, for index plays. The player decides after seeing the upcard and their own two
+/// cards, so the count already includes them: for each deal, the cards left after that upcard and hand are shifted by
+/// linear regression on the tags until the unseen cards' tags add up to `unseen_tags` (C#: CountModel).
+pub struct CountModel {
+    /// `[1..=10]` average tag of each rank.
+    pub tags: [f64; 11],
+    /// Sum of the tags of the unseen cards.
+    pub unseen_tags: f64,
+    /// Number of unseen cards.
+    pub unseen: f64,
+}
+
+/// The model's unseen cards out of the population left after a deal: q_r = n p_r (1 + (t_r - m) x) with
+/// x = (s/n - m) / V, where p, m and V are the population's rank shares, mean tag and tag variance. Returns their sum.
+fn regress(popl: &[f64; 11], model: &CountModel, outc: &mut [f64; 11]) -> f64 {
+    let (mut m, mut st) = (0.0, 0.0);
+    for r in 1..=10 {
+        m += popl[r];
+        st += popl[r] * model.tags[r];
+    }
+    let n = dmin(model.unseen, m);
+    let mean = st / m;
+    let (mut v, mut max_dev) = (0.0, 0.0);
+    for r in 1..=10 {
+        if popl[r] <= 0.0 {
+            continue;
+        }
+        let d = model.tags[r] - mean;
+        v += popl[r] / m * d * d;
+        max_dev = dmax(max_dev, d.abs());
+    }
+    let mut x = if v > 1e-12 { (model.unseen_tags / n - mean) / v } else { 0.0 };
+    if max_dev > 1e-12 {
+        let lim = 0.9 / max_dev;
+        if x > lim {
+            x = lim;
+        } else if x < -lim {
+            x = -lim;
+        }
+    }
+    let mut total = 0.0;
+    for r in 1..=10 {
+        let mut f = 1.0 + (model.tags[r] - mean) * x;
+        if f < 0.02 {
+            f = 0.02;
+        }
+        let mut q = n * popl[r] / m * f;
+        if q > popl[r] {
+            q = popl[r];
+        }
+        outc[r] = q;
+        total += q;
+    }
+    total
+}
+
+const DEALER_CACHE_LIMIT: usize = 1 << 17;
+
+thread_local! {
+    /// Raw dealer distributions keyed by game, upcard and the player's cards (C#: dealerCache). Shared by the engines
+    /// of a thread: the Game page asks for many rule variants in a row, and most of them deal the same cards.
+    static DEALER_CACHE: RefCell<HashMap<u64, [f64; 7]>> = RefCell::new(HashMap::new());
+}
+
+/// Adds a card of rank `r` to a hand key (5 bits per rank).
+fn with_card(cards: u64, r: usize) -> u64 {
+    cards + (1u64 << (5 * (r - 1)))
 }
 
 #[derive(Clone, Copy)]
@@ -56,9 +128,17 @@ pub struct CaEngine {
     p: [f64; 11],
     su: [f64; 11],
     sp: [f64; 11],
+    pop: [f64; 11],
+    tmp: [f64; 11],
     acc: Vec<f64>,
     acc_w: Vec<f64>,
     combos: Vec<Combo>,
+    // Exact expectation off the top (see `exact_off_top`).
+    xc: [f64; 11],
+    hand_memo: HashMap<u64, f64>,
+    x_up: usize,
+    x_game: u64,
+    x_takes_all: bool,
 }
 
 /// Full shoe composition: `[0]` unused, `[1..=9]` = 4 per deck, `[10]` = 16 per deck.
@@ -69,9 +149,12 @@ pub fn full_shoe(decks: f64) -> [f64; 11] {
     c
 }
 
-/// Off-the-top player expectation for the rules with optimal total-dependent basic strategy.
+/// Off-the-top player expectation for the rules with optimal total-dependent basic strategy, played as the simulator
+/// plays it (see [`CaEngine::exact_off_top`]).
 pub fn house_edge_off_top(rules: &Rules) -> f64 {
-    CaEngine::new(rules).evaluate(&full_shoe(rules.decks as f64)).player_ev
+    let mut e = CaEngine::new(rules);
+    let res = e.evaluate(&full_shoe(rules.decks as f64));
+    e.exact_off_top(&res)
 }
 
 fn sum(c: &[f64; 11]) -> f64 {
@@ -97,9 +180,16 @@ impl CaEngine {
             p: [0.0; 11],
             su: [0.0; 11],
             sp: [0.0; 11],
+            pop: [0.0; 11],
+            tmp: [0.0; 11],
             acc: vec![0.0; CELLS_PER_BIN * 4],
             acc_w: vec![0.0; CELLS_PER_BIN],
             combos: Vec::with_capacity(600),
+            xc: [0.0; 11],
+            hand_memo: HashMap::new(),
+            x_up: 1,
+            x_game: 0,
+            x_takes_all: false,
         }
     }
 
@@ -232,6 +322,13 @@ impl CaEngine {
     }
 
     pub fn evaluate(&mut self, shoe: &[f64; 11]) -> CaResult {
+        self.evaluate_with(shoe, None)
+    }
+
+    /// Analysis of a round dealt from `shoe`. With a count model, `shoe` is the population before the deal and the
+    /// cards each deal leaves unseen come from the model (the index plays at that count); deals are weighted by the
+    /// shoe.
+    pub fn evaluate_with(&mut self, shoe: &[f64; 11], model: Option<&CountModel>) -> CaResult {
         const CPB: usize = CELLS_PER_BIN;
         let mut flags = vec![0u8; CPB];
         let mut cell_ev = vec![f64::NAN; CPB * 5];
@@ -250,9 +347,16 @@ impl CaEngine {
 
         for u in 1..=10usize {
             let pu = shoe[u] / n;
-            self.su[1..=10].copy_from_slice(&shoe[1..=10]);
-            self.su[u] = dmax(0.0, self.su[u] - 1.0);
-            let nu = n - 1.0;
+            self.pop[1..=10].copy_from_slice(&shoe[1..=10]);
+            self.pop[u] = dmax(0.0, self.pop[u] - 1.0);
+            let npop = n - 1.0;
+            let nu = match model {
+                None => {
+                    self.su = self.pop;
+                    npop
+                }
+                Some(m) => regress(&self.pop, m, &mut self.su),
+            };
 
             // Hit/stand defaults for totals no two-card hand reaches (e.g. multi-card 21).
             let dbj0 = self.dealer(u, false, nu, peek_cond);
@@ -279,20 +383,30 @@ impl CaEngine {
             }
 
             for a in 1..=10usize {
-                let wa = self.su[a] / nu;
+                let wa = self.pop[a] / npop;
                 if wa <= 0.0 {
                     continue;
                 }
                 for b in a..=10usize {
-                    let sb = self.su[b] - if a == b { 1.0 } else { 0.0 };
+                    let sb = self.pop[b] - if a == b { 1.0 } else { 0.0 };
                     if sb <= 0.0 {
                         continue;
                     }
-                    let w = wa * sb / (nu - 1.0) * if a == b { 1.0 } else { 2.0 };
-                    self.sp = self.su;
-                    self.sp[a] = dmax(0.0, self.sp[a] - 1.0);
-                    self.sp[b] = dmax(0.0, self.sp[b] - 1.0);
-                    let np = nu - 2.0;
+                    let w = wa * sb / (npop - 1.0) * if a == b { 1.0 } else { 2.0 };
+                    let np = match model {
+                        None => {
+                            self.sp = self.pop;
+                            self.sp[a] = dmax(0.0, self.sp[a] - 1.0);
+                            self.sp[b] = dmax(0.0, self.sp[b] - 1.0);
+                            npop - 2.0
+                        }
+                        Some(m) => {
+                            self.tmp = self.pop;
+                            self.tmp[a] = dmax(0.0, self.tmp[a] - 1.0);
+                            self.tmp[b] = dmax(0.0, self.tmp[b] - 1.0);
+                            regress(&self.tmp, m, &mut self.sp)
+                        }
+                    };
                     let pbj = if u == 1 {
                         self.sp[10] / np
                     } else if u == 10 {
@@ -419,11 +533,15 @@ impl CaEngine {
                 f |= flag::SURRENDER;
             }
             flags[pcell] = f;
-            cell_ev[pcell * 5 + 4] = if can_split { c.p } else { f64::NAN };
-            cell_ev[pcell * 5] = non_split;
+            cell_ev[pcell * 5] = c.s;
+            cell_ev[pcell * 5 + 1] = c.hh;
+            if c.can_d {
+                cell_ev[pcell * 5 + 2] = c.d;
+            }
             if surr_allowed {
                 cell_ev[pcell * 5 + 3] = c.rr;
             }
+            cell_ev[pcell * 5 + 4] = if can_split { c.p } else { f64::NAN };
         }
 
         // Pass 3: expectation of the resulting strategy.
@@ -452,5 +570,208 @@ impl CaEngine {
         }
 
         CaResult { flags, insure, player_ev: ev_total, insurance_ev, cell_ev }
+    }
+
+    // ---------------- Exact expectation of a strategy off the top ----------------
+
+    fn raw_dealer(&mut self, cards: u64, n: f64) -> [f64; 7] {
+        let key = ((cards * 16 + self.x_up as u64) << 5) + self.x_game;
+        if let Some(d) = DEALER_CACHE.with_borrow(|c| c.get(&key).copied()) {
+            return d;
+        }
+        self.dags[self.x_up - 1].evaluate(&self.xc, n, &mut self.mass, &mut self.dist);
+        let d = self.dist;
+        DEALER_CACHE.with_borrow_mut(|c| {
+            if c.len() >= DEALER_CACHE_LIMIT {
+                c.clear();
+            }
+            c.insert(key, d);
+        });
+        d
+    }
+
+    /// The player stands on `total` with `bet` units; peek games leave out the dealer's blackjacks (see
+    /// `exact_off_top`).
+    fn terminal(&mut self, cards: u64, n: f64, total: usize, bet: f64) -> f64 {
+        let d = self.raw_dealer(cards, n);
+        let mut ev = d[5];
+        for (k, &dk) in d[..5].iter().enumerate() {
+            let t = 17 + k;
+            if total > t {
+                ev += dk;
+            } else if total < t {
+                ev -= dk;
+            }
+        }
+        ev *= bet;
+        if self.x_takes_all {
+            ev -= bet * d[6];
+        }
+        ev
+    }
+
+    fn bust(&self, n: f64, bet: f64) -> f64 {
+        if self.x_takes_all {
+            return -bet;
+        }
+        let pb = if self.x_up == 1 {
+            self.xc[10] / n
+        } else if self.x_up == 10 {
+            self.xc[1] / n
+        } else {
+            0.0
+        };
+        -bet * (1.0 - pb)
+    }
+
+    /// Value of a hand of three or more cards, played by the flags as the simulator plays it.
+    fn play(&mut self, flags: &[u8], cards: u64, n: f64, h: usize, ace: bool) -> f64 {
+        let key = cards * 16 + self.x_up as u64;
+        if let Some(&v) = self.hand_memo.get(&key) {
+            return v;
+        }
+        let soft = ace && h <= 11;
+        let best = if soft { h + 10 } else { h };
+        let v = if best == 21 {
+            self.terminal(cards, n, 21, 1.0)
+        } else {
+            let cell = if soft { soft_cell(best, self.x_up) } else { hard_cell(h, self.x_up) };
+            if (flags[cell] & flag::STAND) != 0 {
+                self.terminal(cards, n, best, 1.0)
+            } else {
+                self.draw(flags, cards, n, h, ace, 1.0)
+            }
+        };
+        self.hand_memo.insert(key, v);
+        v
+    }
+
+    /// Takes one card: a hit (bet 1, then plays on) or a double (bet 2, then stands).
+    fn draw(&mut self, flags: &[u8], cards: u64, n: f64, h: usize, ace: bool, bet: f64) -> f64 {
+        let mut ev = 0.0;
+        for r in 1..=10usize {
+            let cr = self.xc[r];
+            if cr <= 0.0 {
+                continue;
+            }
+            let pr = cr / n;
+            self.xc[r] = cr - 1.0;
+            let h2 = h + r;
+            let a2 = ace || r == 1;
+            let v = if h2 > 21 {
+                self.bust(n - 1.0, bet)
+            } else if bet == 2.0 {
+                self.terminal(with_card(cards, r), n - 1.0, if a2 && h2 <= 11 { h2 + 10 } else { h2 }, 2.0)
+            } else {
+                self.play(flags, with_card(cards, r), n - 1.0, h2, a2)
+            };
+            ev += pr * v;
+            self.xc[r] = cr;
+        }
+        ev
+    }
+
+    /// Split EV of a pair exactly as `evaluate` works it out (`xc` holds the cards left after the deal).
+    fn split_off_top(&mut self, u: usize, a: usize, np: f64, pbj: f64, peek_cond: bool) -> f64 {
+        self.sp = self.xc;
+        let dbj = self.dealer(u, true, np, peek_cond);
+        self.fill_stand(dbj);
+        for r in 1..=10 {
+            self.p[r] = self.sp[r] / np;
+        }
+        self.fill_dp();
+        let mut ev_p = self.split_ev(a);
+        if peek_cond && pbj > 0.0 {
+            ev_p = -pbj + (1.0 - pbj) * ev_p;
+        }
+        ev_p
+    }
+
+    /// Off-the-top expectation of the strategy in `basic` (its flags and insurance) with every card the player draws
+    /// taken out of the shoe: hits and doubles follow the flags exactly as the simulator plays them. `evaluate`'s
+    /// `player_ev` assumes the best play after each hit, with the draw odds fixed after the first three cards, which is
+    /// up to 0.04% too high with one deck. Splits keep `evaluate`'s approximation. In peek games each deal loses its
+    /// blackjack probability once and the dealer's blackjacks are left out of every later outcome, which is exact
+    /// because the order of the unseen cards doesn't matter.
+    pub fn exact_off_top(&mut self, basic: &CaResult) -> f64 {
+        let shoe = full_shoe(self.r.decks as f64);
+        self.x_game = (self.r.decks * 2 + if self.r.h17 { 1 } else { 0 }) as u64;
+        self.hand_memo.clear();
+        self.x_takes_all = self.r.dealer_bj_takes_all();
+        let surr_allowed = self.r.surrender != SurrenderRule::None;
+        let sr_before_peek = self.r.surrender_before_peek();
+        let peek_cond = !self.r.dealer_bj_takes_all();
+        let flags = &basic.flags;
+        let n = sum(&shoe);
+        let mut ev_total = 0.0;
+        for u in 1..=10usize {
+            let pu = shoe[u] / n;
+            if pu <= 0.0 {
+                continue;
+            }
+            self.x_up = u;
+            self.pop[1..=10].copy_from_slice(&shoe[1..=10]);
+            self.pop[u] = dmax(0.0, self.pop[u] - 1.0);
+            let npop = n - 1.0;
+            for a in 1..=10usize {
+                let wa = self.pop[a] / npop;
+                if wa <= 0.0 {
+                    continue;
+                }
+                for b in a..=10usize {
+                    let sb = self.pop[b] - if a == b { 1.0 } else { 0.0 };
+                    if sb <= 0.0 {
+                        continue;
+                    }
+                    let w = wa * sb / (npop - 1.0) * if a == b { 1.0 } else { 2.0 };
+                    self.xc = self.pop;
+                    self.xc[a] = dmax(0.0, self.xc[a] - 1.0);
+                    self.xc[b] = dmax(0.0, self.xc[b] - 1.0);
+                    let np = npop - 2.0;
+                    let pbj = if u == 1 {
+                        self.xc[10] / np
+                    } else if u == 10 {
+                        self.xc[1] / np
+                    } else {
+                        0.0
+                    };
+                    if a == 1 && b == 10 {
+                        ev_total += pu * w * (1.0 - pbj) * self.r.blackjack_pays;
+                        continue;
+                    }
+                    let h0 = a + b;
+                    let ace0 = a == 1 || b == 1;
+                    let soft0 = ace0 && h0 + 10 <= 21;
+                    let pf = if a == b { flags[pair_cell(a, u)] } else { 0 };
+                    let tf = flags[if soft0 { soft_cell(h0 + 10, u) } else { hard_cell(h0, u) }];
+                    let ev_r = if sr_before_peek { -0.5 } else { -pbj - 0.5 * (1.0 - pbj) };
+                    let ev = if surr_allowed && (pf & flag::SURRENDER) != 0 {
+                        ev_r
+                    } else if (pf & flag::SPLIT) != 0 {
+                        self.split_off_top(u, a, np, pbj, peek_cond)
+                    } else if surr_allowed && (tf & flag::SURRENDER) != 0 {
+                        ev_r
+                    } else {
+                        let cards = with_card(with_card(0, a), b);
+                        let mut v = if (tf & flag::DOUBLE) != 0 && self.r.can_double_total(h0 as i32, soft0) {
+                            self.draw(flags, cards, np, h0, ace0, 2.0)
+                        } else if (tf & flag::STAND) != 0 {
+                            self.terminal(cards, np, if soft0 { h0 + 10 } else { h0 }, 1.0)
+                        } else {
+                            self.draw(flags, cards, np, h0, ace0, 1.0)
+                        };
+                        if peek_cond {
+                            v -= pbj;
+                        }
+                        v
+                    };
+                    ev_total += pu * w * ev;
+                }
+            }
+        }
+        if basic.insure {
+            ev_total += (shoe[1] / n) * basic.insurance_ev;
+        }
+        ev_total
     }
 }

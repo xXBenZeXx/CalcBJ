@@ -41,7 +41,8 @@
     return ((-Math.log(ror) * a.var) / (2 * a.ev)) * app.unit;
   }
 
-  let maxBet = $derived(Math.max(0, ...app.ramp.units) * app.unit);
+  // All hands of the top bet.
+  let maxBet = $derived(Math.max(0, ...app.ramp.units.map((u, i) => u * Math.max(1, app.ramp.hands[i]))) * app.unit);
 
   /** Lifetime ROR for bankrolls up to the one that gives 0.1%. */
   let rorCurve = $derived.by(() => {

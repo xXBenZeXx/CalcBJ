@@ -5,7 +5,7 @@
   import StrategyChart from "../lib/components/StrategyChart.svelte";
   import { engine } from "../lib/engine/engine";
   import type { CountSystem, HandKind, IndexOverride, PlayKind, StrategyInfo } from "../lib/engine/types";
-  import { parseNumber, signed, signedTrim, trim } from "../lib/format";
+  import { parseNumber, signed, signedTrim, snapTag, trim } from "../lib/format";
   import { app, presets } from "../lib/state.svelte";
   import { INDEX_MODES, RANK_NAMES, isBalanced, metricPrefix } from "../lib/text";
 
@@ -52,9 +52,9 @@
     const cs = $state.snapshot(app.count);
     if (red) {
       cs.redTags = cs.redTags ?? [...cs.tags];
-      cs.redTags[i] = v;
+      cs.redTags[i] = snapTag(v);
     } else {
-      cs.tags[i] = v;
+      cs.tags[i] = snapTag(v);
     }
     replaceCount(cs);
   }
@@ -171,7 +171,7 @@
     rows.push(toRow({ ...base, ...o }));
   }
 
-  /** Published Hi-Lo multi-deck S17 values (Illustrious 18 and Fab 4). */
+  /** Published Hi-Lo multi-deck values (Illustrious 18 and Fab 4), S17 unless changed below for H17. */
   function addPublished() {
     const published: [HandKind, number, number, PlayKind, number][] = [
       ["Insurance", 0, 1, "Insure", 3],
@@ -197,7 +197,16 @@
       ["Hard", 15, 9, "Surrender", 2],
       ["Hard", 15, 1, "Surrender", 1],
     ];
-    for (const [kind, total, upcard, play, index] of published) addRow({ kind, total, upcard, play, index });
+    for (const [kind, total, upcard, play, index] of published) {
+      let i = index;
+      if (app.rules.h17 && kind === "Hard" && upcard === 1) {
+        // H17: 11 v A doubles from -1, 10 v A from +3, and 15 v A surrenders from -1.
+        if (total === 11 && play === "Double") i = -1;
+        else if (total === 10 && play === "Double") i = 3;
+        else if (total === 15 && play === "Surrender") i = -1;
+      }
+      addRow({ kind, total, upcard, play, index: i });
+    }
     saveRows();
   }
 

@@ -65,6 +65,14 @@ namespace CalcBJ.Engine
             return m;
         }
 
+        /// <summary>Largest amount on the table in one round: units per hand times hands.</summary>
+        public double MaxBet()
+        {
+            double m = 0;
+            for (int i = 0; i < Units.Length; i++) m = Math.Max(m, Units[i] * Math.Max(1, Hands[i]));
+            return m;
+        }
+
         public double MinPositiveUnits()
         {
             double m = double.MaxValue;
@@ -228,7 +236,7 @@ namespace CalcBJ.Engine
             res.EdgePct = ev / bet * 100;
             res.DI = 1000 * ev / res.SD;
             res.Score = ev > 0 ? 1e6 * ev * ev / res.Var : 0;
-            res.N0 = ev != 0 ? res.Var / (ev * ev) : double.PositiveInfinity;
+            res.N0 = ev > 0 ? res.Var / (ev * ev) : double.PositiveInfinity;
             res.HoursN0 = res.N0 / roundsPerHour;
             res.SeEV = Math.Sqrt(seVar);
             res.WinPerHour = ev * roundsPerHour * unit;
@@ -240,7 +248,7 @@ namespace CalcBJ.Engine
             res.ROR = ev > 0 ? Math.Exp(-2 * ev * bU / res.Var) : 1.0;
             res.CEPerHour = (ev - res.Var / (2 * bU)) * roundsPerHour * unit;
             res.KellyUnit = ev > 0 ? bankroll * ev / m2 : 0;
-            double mx = ramp.MaxUnits(), mn = ramp.MinPositiveUnits();
+            double mx = ramp.MaxBet(), mn = ramp.MinPositiveUnits();
             res.Spread = mn > 0 ? mx / mn : 0;
             return res;
         }

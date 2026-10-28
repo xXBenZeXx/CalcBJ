@@ -2,8 +2,9 @@
 //!
 //! Cell layout per count bin: hard totals [0..=21] x 10 upcards, soft totals [0..=21] x 10, pairs [A..=T] x 10.
 
-use crate::ca::{CaEngine, CaResult, flag, full_shoe};
+use crate::ca::{CaEngine, CaResult, CountModel, flag, full_shoe};
 use crate::num::dmax;
+use crate::sim::metric_value;
 use crate::types::{
     CountMetric, CountSystem, HandKind, IndexMode, IndexOverride, PlayKind, Rules, StrategyConfig, SurrenderRule,
     TcRounding, cards,
@@ -196,7 +197,8 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
     let mut bin_ev = vec![f64::NAN; NUM_BINS];
 
     let mut engine = CaEngine::new(rules);
-    let basic_result = engine.evaluate(&full_shoe(rules.decks as f64));
+    let mut basic_result = engine.evaluate(&full_shoe(rules.decks as f64));
+    basic_result.player_ev = engine.exact_off_top(&basic_result);
 
     // The C# version takes min/max of the range and clamps each end once; clamping both ends here as well keeps a
     // range that lies entirely outside the bins usable instead of failing.
@@ -204,9 +206,28 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
     let hi = sc.index_min.max(sc.index_max).clamp(BIN_MIN, BIN_MAX);
     let per_bin: Option<Vec<CaResult>> = if sc.mode != IndexMode::BasicOnly {
         let d_mid = mid_depth_decks(rules);
-        let shoes: Vec<[f64; 11]> =
-            (lo..=hi).map(|v| shifted_shoe(cs, tc_equivalent(cs, rules, representative(cs, v)), d_mid)).collect();
-        Some(evaluate_all(rules, &shoes, engine))
+        let mut tags = [0.0; 11];
+        for (r, t) in tags.iter_mut().enumerate().skip(1) {
+            *t = cs.rank_tag(r);
+        }
+        let total_tags = cs.imbalance_per_deck() * rules.decks as f64;
+        let irc = cs.irc(rules.decks);
+        let (unseen, unseen_mean) = bin_moments(rules, cs);
+        // The count when the player decides includes the upcard and their cards (see CountModel).
+        let models: Vec<CountModel> = (lo..=hi)
+            .map(|v| {
+                let b = (v - BIN_MIN) as usize;
+                if !unseen[b].is_nan() {
+                    CountModel { tags, unseen: unseen[b], unseen_tags: unseen_mean[b] * unseen[b] }
+                } else {
+                    // A count this game never reaches: extend from the bin's representative value at mid depth.
+                    let rep = representative(cs, v);
+                    let rc = if cs.metric == CountMetric::TrueCount { rep * d_mid } else { rep };
+                    CountModel { tags, unseen: 52.0 * d_mid, unseen_tags: total_tags - (rc - irc) }
+                }
+            })
+            .collect();
+        Some(evaluate_all(rules, &full_shoe(rules.decks as f64), &models, engine))
     } else {
         None
     };
@@ -261,22 +282,22 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
     pt
 }
 
-/// Runs the analysis for every composition, on all cores where threads exist (the results do not depend on it).
+/// Runs the analysis for every count model, on all cores where threads exist (the results do not depend on it).
 #[cfg(not(target_arch = "wasm32"))]
-fn evaluate_all(rules: &Rules, shoes: &[[f64; 11]], engine: CaEngine) -> Vec<CaResult> {
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(shoes.len()).max(1);
+fn evaluate_all(rules: &Rules, full: &[f64; 11], models: &[CountModel], engine: CaEngine) -> Vec<CaResult> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(models.len()).max(1);
     if threads == 1 {
         let mut engine = engine;
-        return shoes.iter().map(|s| engine.evaluate(s)).collect();
+        return models.iter().map(|m| engine.evaluate_with(full, Some(m))).collect();
     }
-    let per = shoes.len().div_ceil(threads);
+    let per = models.len().div_ceil(threads);
     std::thread::scope(|scope| {
-        let parts: Vec<_> = shoes
+        let parts: Vec<_> = models
             .chunks(per)
             .map(|part| {
                 scope.spawn(move || {
                     let mut engine = CaEngine::new(rules);
-                    part.iter().map(|s| engine.evaluate(s)).collect::<Vec<_>>()
+                    part.iter().map(|m| engine.evaluate_with(full, Some(m))).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -285,8 +306,72 @@ fn evaluate_all(rules: &Rules, shoes: &[[f64; 11]], engine: CaEngine) -> Vec<CaR
 }
 
 #[cfg(target_arch = "wasm32")]
-fn evaluate_all(_rules: &Rules, shoes: &[[f64; 11]], mut engine: CaEngine) -> Vec<CaResult> {
-    shoes.iter().map(|s| engine.evaluate(s)).collect()
+fn evaluate_all(_rules: &Rules, full: &[f64; 11], models: &[CountModel], mut engine: CaEngine) -> Vec<CaResult> {
+    models.iter().map(|m| engine.evaluate_with(full, Some(m))).collect()
+}
+
+/// Where the decisions of each count bin fall in the shoe: the expected number of unseen cards and the expected
+/// average tag of the unseen cards, for decisions spread evenly over the dealt part of the shoe, with the running
+/// count binned exactly as the simulator does. Running counts move in whole cards and true counts cluster towards
+/// zero, so a bin's midpoint is a poor stand-in for the counts in it, most of all with one or two decks. Bins that
+/// never occur get NaN (C#: BinMoments).
+pub fn bin_moments(rules: &Rules, cs: &CountSystem) -> (Vec<f64>, Vec<f64>) {
+    let n_total = rules.total_cards();
+    let scale = cs.scale();
+    let irc = (cs.irc(rules.decks) * scale as f64).round_ties_even() as i32;
+    let (mut mu, mut m2) = (0.0, 0.0);
+    for code in 0..20 {
+        let rank = (code >> 1) + 1;
+        let share = (if rank == 10 { 8.0 } else { 2.0 }) / 52.0;
+        let t = (cs.tag_of_code(code) * scale as f64).round_ties_even();
+        mu += share * t;
+        m2 += share * t * t;
+    }
+    let var1 = m2 - mu * mu;
+    let total = mu * n_total as f64;
+    let mut w = vec![0.0; NUM_BINS];
+    let mut wn = vec![0.0; NUM_BINS];
+    let mut wm = vec![0.0; NUM_BINS];
+    let last = 3.max((n_total - 2).min((n_total as f64 * rules.penetration).round_ties_even() as i32));
+    for k in 3..=last {
+        // Seen cards' scaled tag sum: k cards drawn without replacement from the shoe.
+        let n = n_total - k;
+        let mean = k as f64 * mu;
+        let sd = dmax(0.0, k as f64 * var1 * n as f64 / (n_total as f64 - 1.0)).sqrt();
+        let s0 = (mean - 6.0 * sd).floor() as i32;
+        let s1 = (mean + 6.0 * sd).ceil() as i32;
+        let weight = |s: i32| {
+            if sd > 0.0 {
+                (-0.5 * (s as f64 - mean) * (s as f64 - mean) / (sd * sd)).exp()
+            } else if s == s0 {
+                1.0
+            } else {
+                0.0
+            }
+        };
+        let mut z = 0.0;
+        for s in s0..=s1 {
+            z += weight(s);
+        }
+        if z <= 0.0 {
+            continue;
+        }
+        for s in s0..=s1 {
+            let pr = weight(s) / z;
+            if pr <= 0.0 {
+                continue;
+            }
+            // The hole card is dealt but unseen: the simulator's count uses the cards left after it.
+            let v = metric_value(cs, scale, irc + s, n - 1).clamp(BIN_MIN, BIN_MAX);
+            let b = (v - BIN_MIN) as usize;
+            w[b] += pr;
+            wn[b] += pr * n as f64;
+            wm[b] += pr * (total - s as f64) / scale as f64 / n as f64;
+        }
+    }
+    let unseen = (0..NUM_BINS).map(|b| if w[b] > 1e-12 { wn[b] / w[b] } else { f64::NAN }).collect();
+    let unseen_mean = (0..NUM_BINS).map(|b| if w[b] > 1e-12 { wm[b] / w[b] } else { f64::NAN }).collect();
+    (unseen, unseen_mean)
 }
 
 fn merge(flags: &mut [u8], idx: usize, src: u8, mask: u8) {
@@ -445,8 +530,20 @@ fn describe(
         (true, min_d, format!("at {} or more", signed(min_d)))
     } else if min_d == lo && max_d != hi {
         (false, max_d, format!("at {} or less", signed(max_d)))
-    } else if min_d == lo && max_d == hi {
+    } else if min_d == lo && max_d == hi && count == hi - lo + 1 {
         (true, lo, "always".to_string())
+    } else if min_d == lo && max_d == hi {
+        // Deviates at both ends of the range: name the two ends, e.g. "at -4 or less, and at +10 or more".
+        let deviates = |v: i32| ((pt.flags_at(v, cell) & mask) != 0) != basic;
+        let mut low_end = lo;
+        while low_end < hi && deviates(low_end + 1) {
+            low_end += 1;
+        }
+        let mut high_start = hi;
+        while high_start > lo && deviates(high_start - 1) {
+            high_start -= 1;
+        }
+        (false, low_end, format!("at {} or less, and at {} or more", signed(low_end), signed(high_start)))
     } else {
         (true, min_d, format!("from {} to {}", signed(min_d), signed(max_d)))
     };

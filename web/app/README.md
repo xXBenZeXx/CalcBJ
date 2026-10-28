@@ -64,7 +64,7 @@ maskable icon and the Apple touch icon fill the whole square).
 | `src/lib/engine/sim-worker.ts` | a simulation worker: its own engine instance and shoe |
 | `src/lib/simulation.svelte.ts` | one worker per CPU thread; workers take 500,000-round chunks until the target is reached, and Stop keeps the chunks that finished |
 | `src/lib/state.svelte.ts` | settings, results kept per configuration, Run and Stop, Compare snapshots; settings and results are saved in the browser |
-| `src/lib/sweep.svelte.ts` | the sensitivity sweep: one simulation (or optimiser run) per value |
+| `src/lib/sweep.svelte.ts` | the sensitivity sweep: one simulation (or optimiser run) per value; in a decks sweep, running and unbalanced counts get each deck count's own index range and ramp (`rampForRules`) |
 | `src/lib/scenario.ts`, `src/lib/files.ts` | the `.bjev` format, and opening and saving files |
 | `src/lib/desktop.ts`, `src-tauri/` | the desktop app: its window, installers and file dialogs |
 | `src/lib/components/Chart.svelte` | the charts (bars, lines, areas, bands) with the hover readout and the table view |

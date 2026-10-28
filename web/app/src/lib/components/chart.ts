@@ -34,10 +34,10 @@ export function ticks(lo: number, hi: number, step: number): number[] {
   return out;
 }
 
-/** Compact axis numbers: 950, 1.2K, 25K, 1.5M. */
+/** Compact axis numbers: 950, 1.2K, 25K, 1.5M (999,600 is "1M", not "1000K"). */
 export function compact(v: number): string {
   const a = Math.abs(v);
-  if (a >= 1e6) return String(Number((v / 1e6).toFixed(a >= 1e7 ? 0 : 1))) + "M";
+  if (a >= 999_500) return String(Number((v / 1e6).toFixed(a >= 1e7 ? 0 : 1))) + "M";
   if (a >= 1e3) return String(Number((v / 1e3).toFixed(a >= 1e4 ? 0 : 1))) + "K";
   return String(Number(v.toFixed(2)));
 }

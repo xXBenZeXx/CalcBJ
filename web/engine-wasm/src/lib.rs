@@ -103,8 +103,9 @@ fn rules(req: &Value) -> Result<Rules, String> {
     if !(1..=8).contains(&r.decks) {
         return Err("the number of decks must be 1 to 8".into());
     }
-    if !(0.0..1.0).contains(&r.penetration) {
-        return Err("penetration must be below 100%".into());
+    // 100% means the cut card sits as deep as the reserve for the round in progress allows, as in the Windows app.
+    if !(0.0..=1.0).contains(&r.penetration) {
+        return Err("penetration must be 0 to 100%".into());
     }
     if !(0.0..=10.0).contains(&r.blackjack_pays) {
         return Err("the blackjack payout must be between 0 and 10".into());
@@ -263,6 +264,12 @@ fn handle(req: &Value) -> Result<Value, String> {
         "indexRange" => {
             let (lo, hi) = app::index_range(&count(req)?, &rules(req)?);
             Ok(json!({ "min": lo, "max": hi }))
+        }
+        "rampForRules" => {
+            let (cs, ramp) = (count(req)?, ramp(req)?);
+            let from: Rules = arg(req, "from")?;
+            let to = rules(req)?;
+            Ok(json!(app::ramp_for_rules(&cs, &from, &to, &ramp, arg(req, "preset")?)))
         }
         "bins" => to_value(&analysis::bins(&sim(req)?)),
         "evaluate" => {

@@ -257,20 +257,22 @@ impl CountSystem {
         }
     }
 
-    /// Smallest multiplier that makes every tag an integer.
-    // Written like the C# check, `!(x > tol)`, so a NaN tag does not disqualify a scale.
-    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    /// Largest multiplier the simulator works with; the count page keeps entries on a grid that fits it.
+    pub const MAX_SCALE: i32 = 60;
+
+    /// Smallest multiplier that makes every tag and the initial running count integers, so the simulator counts exactly
+    /// the entered values (`MAX_SCALE` when nothing up to it does).
     pub fn scale(&self) -> i32 {
-        for s in [1, 2, 3, 4, 5, 10] {
-            let ok = (0..20).all(|code| {
-                let v = self.tag_of_code(code) * s as f64;
-                !((v - v.round_ties_even()).abs() > 1e-9)
-            });
+        for s in 1..Self::MAX_SCALE {
+            let sf = s as f64;
+            let ok = whole(self.irc_base * sf)
+                && whole(self.irc_per_deck * sf)
+                && (0..20).all(|code| whole(self.tag_of_code(code) * sf));
             if ok {
                 return s;
             }
         }
-        10
+        Self::MAX_SCALE
     }
 
     /// Sum of tags over one 52-card deck.
@@ -371,6 +373,13 @@ impl CountSystem {
 
 fn signed_tag(v: f64) -> String {
     format!("{}{}", if v > 0.0 { "+" } else { "" }, dotnet_fixed(v, 2))
+}
+
+/// Whether a scaled tag is an integer. Written like the C# check, `!(x > tol)`, so a NaN tag does not disqualify a
+/// scale.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn whole(v: f64) -> bool {
+    !((v - v.round_ties_even()).abs() > 1e-9)
 }
 
 /// A user-entered index play that replaces the computed/basic decision for one flag of one cell.

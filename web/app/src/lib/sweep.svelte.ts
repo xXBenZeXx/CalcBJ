@@ -93,6 +93,7 @@ class Sweep {
     const count = $state.snapshot(app.count);
     const config = $state.snapshot(app.strategy);
     const ramp = $state.snapshot(app.ramp);
+    const preset = app.rampPreset;
     const { spots, unit, rph, bankroll, autoRph, threads } = app;
     const rounds = this.rounds;
 
@@ -122,13 +123,21 @@ class Sweep {
           const sc = { ...config, overrides: [...config.overrides] };
           let sp = spots;
           let pointRph = rph;
+          let pointRamp = ramp;
           let label: string;
           if (p === 0) {
-            r.penetration = v / 100;
+            r.penetration = Math.max(0, Math.min(1, v / 100));
             label = trim(v, 1) + "%";
           } else if (p === 1) {
             r.decks = Math.max(1, Math.min(8, Math.trunc(v)));
             label = r.decks + "D";
+            if (count.metric === "RunningCount" || !engine.countInfo(rules, count).balanced) {
+              // As on the Game page: the index range and the ramp move with the number of decks.
+              const range = engine.indexRange(r, count);
+              sc.indexMin = range.min;
+              sc.indexMax = range.max;
+              pointRamp = engine.rampForRules(rules, r, count, ramp, preset);
+            }
           } else if (p === 2) {
             sp = Math.max(1, Math.min(7, Math.trunc(v)));
             if (autoRph) pointRph = RPH_TABLE[sp];
@@ -150,7 +159,7 @@ class Sweep {
           if (simulation.stoppedByUser) this.cancel = true;
           if (!d || d.rounds === 0) break;
           if (!this.cancel) app.remember(d);
-          point = { label, value: v, result: engine.evaluate(d, ramp, unit, pointRph, bankroll).result };
+          point = { label, value: v, result: engine.evaluate(d, pointRamp, unit, pointRph, bankroll).result };
         }
         this.points.push(point);
         this.status = `Point ${this.points.length} of ${values.length} done.`;

@@ -1,6 +1,6 @@
 <script lang="ts">
   import Card from "../lib/components/Card.svelte";
-  import { count, grouped, money, money0, pct, signedPct, trim } from "../lib/format";
+  import { count, fixed, grouped, money, money0, pct, signedPct, trim } from "../lib/format";
   import type { CompareEntry } from "../lib/scenario";
   import { app } from "../lib/state.svelte";
 
@@ -24,10 +24,17 @@
     { label: "Win per 100 rounds", get: (e) => money(e.winPer100), value: (e) => e.winPer100 },
     { label: "Player edge", get: (e) => signedPct(e.edgePct / 100, 3), value: (e) => e.edgePct },
     { label: "Average bet", get: (e) => money(e.avgBet) },
-    { label: "Spread / rounds played", get: (e) => `1–${trim(e.spread, 1)} / ${trim(e.playedPct, 1)}%` },
-    { label: "SCORE", get: (e) => e.score.toFixed(2), value: (e) => e.score },
-    { label: "DI", get: (e) => e.di.toFixed(2), value: (e) => e.di },
-    { label: "N0 (rounds / hours)", get: (e) => `${grouped(e.n0)} / ${grouped(e.hoursN0)}`, value: (e) => -e.n0 },
+    {
+      label: "Spread / rounds played",
+      get: (e) => (Number.isNaN(e.spread) ? "—" : `1–${trim(e.spread, 1)} / ${trim(e.playedPct, 1)}%`),
+    },
+    { label: "SCORE", get: (e) => fixed(e.score, 2), value: (e) => e.score },
+    { label: "DI", get: (e) => fixed(e.di, 2), value: (e) => e.di },
+    {
+      label: "N0 (rounds / hours)",
+      get: (e) => (e.n0 === Infinity ? "never (losing game)" : `${grouped(e.n0)} / ${grouped(e.hoursN0)}`),
+      value: (e) => -e.n0,
+    },
     { label: "Risk of ruin", get: (e) => pct(e.ror, 2), value: (e) => -e.ror },
     { label: "Bankroll for 5% ROR", get: (e) => money0(e.bankroll5), value: (e) => -e.bankroll5 },
     { label: "Kelly-optimal unit", get: (e) => money(e.kellyUnit) },

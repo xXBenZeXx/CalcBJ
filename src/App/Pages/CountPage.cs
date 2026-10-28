@@ -265,7 +265,7 @@ namespace CalcBJ.App
             for (int i = 0; i < 10; i++)
             {
                 double v;
-                if (Theme.TryParse(Convert.ToString(tags.Rows[0].Cells[i + 1].Value, CultureInfo.InvariantCulture), out v)) cs.Tags[i] = Math.Max(-20, Math.Min(20, v));
+                if (Theme.TryParse(Convert.ToString(tags.Rows[0].Cells[i + 1].Value, CultureInfo.InvariantCulture), out v)) cs.Tags[i] = CountSystem.Snap(Math.Max(-20, Math.Min(20, v)));
             }
             if (redTags.Checked)
             {
@@ -273,7 +273,7 @@ namespace CalcBJ.App
                 for (int i = 0; i < 10; i++)
                 {
                     double v;
-                    if (tags.Rows[1].Visible && Theme.TryParse(Convert.ToString(tags.Rows[1].Cells[i + 1].Value, CultureInfo.InvariantCulture), out v)) cs.RedTags[i] = Math.Max(-20, Math.Min(20, v));
+                    if (tags.Rows[1].Visible && Theme.TryParse(Convert.ToString(tags.Rows[1].Cells[i + 1].Value, CultureInfo.InvariantCulture), out v)) cs.RedTags[i] = CountSystem.Snap(Math.Max(-20, Math.Min(20, v)));
                 }
             }
             else cs.RedTags = null;
@@ -370,6 +370,7 @@ namespace CalcBJ.App
                 string kind = Convert.ToString(row.Cells[1].Value);
                 o.Kind = kind == "Soft" ? HandKind.Soft : (kind == "Pair" ? HandKind.Pair : (kind == "Insurance" ? HandKind.Insurance : HandKind.Hard));
                 string total = Convert.ToString(row.Cells[2].Value, CultureInfo.InvariantCulture) ?? "";
+                o.Total = 0;   // a total that doesn't parse makes the row invalid instead of keeping a default
                 if (o.Kind == HandKind.Pair) o.Total = ParseRank(total.Split(',')[0]);
                 else if (o.Kind == HandKind.Soft)
                 {
@@ -400,7 +401,7 @@ namespace CalcBJ.App
 
         void LoadPublished()
         {
-            // Published Hi-Lo multi-deck S17 values (Illustrious 18 and Fab 4).
+            // Published Hi-Lo multi-deck values (Illustrious 18 and Fab 4), S17 unless changed below for H17.
             object[,] rows =
             {
                 { HandKind.Insurance, 0, 1, PlayKind.Insure, 3 },
@@ -421,6 +422,13 @@ namespace CalcBJ.App
                 var o = new IndexOverride();
                 o.Kind = (HandKind)rows[i, 0]; o.Total = (int)rows[i, 1]; o.Upcard = (int)rows[i, 2];
                 o.Play = (PlayKind)rows[i, 3]; o.Index = (int)rows[i, 4]; o.AtOrAbove = true; o.Enabled = true;
+                if (State.Rules.H17 && o.Kind == HandKind.Hard && o.Upcard == 1)
+                {
+                    // H17: 11 v A doubles from -1, 10 v A from +3, and 15 v A surrenders from -1.
+                    if (o.Total == 11 && o.Play == PlayKind.Double) o.Index = -1;
+                    else if (o.Total == 10 && o.Play == PlayKind.Double) o.Index = 3;
+                    else if (o.Total == 15 && o.Play == PlayKind.Surrender) o.Index = -1;
+                }
                 AddOverrideRow(o);
             }
             SaveOverrides();
@@ -483,20 +491,28 @@ namespace CalcBJ.App
                 catch { }
                 eorKey = key;
             }
+            // Card by card (red and black separately), so counts with red tags such as Red Seven get their real tags.
             var cs = State.Count;
-            double[] t = new double[11], ins = new double[11], w = new double[11];
-            for (int k = 1; k <= 10; k++) { t[k] = cs.RankTag(k); w[k] = k == 10 ? 4 : 1; ins[k] = k == 10 ? -9.0 / 4.0 : 1; }
-            bc = Corr(t, eorCache, w);
+            double[] t = new double[20], eor = new double[20], ins = new double[20], w = new double[20];
+            for (int code = 0; code < 20; code++)
+            {
+                int k = (code >> 1) + 1;
+                t[code] = cs.TagOfCode(code);
+                eor[code] = eorCache[k];
+                w[code] = k == 10 ? 2 : 0.5;
+                ins[code] = k == 10 ? -9.0 / 4.0 : 1;
+            }
+            bc = Corr(t, eor, w);
             ic = Corr(t, ins, w);
         }
 
         static double Corr(double[] x, double[] y, double[] w)
         {
             double sw = 0, mx = 0, my = 0;
-            for (int k = 1; k <= 10; k++) { sw += w[k]; mx += w[k] * x[k]; my += w[k] * y[k]; }
+            for (int k = 0; k < x.Length; k++) { sw += w[k]; mx += w[k] * x[k]; my += w[k] * y[k]; }
             mx /= sw; my /= sw;
             double sxy = 0, sxx = 0, syy = 0;
-            for (int k = 1; k <= 10; k++)
+            for (int k = 0; k < x.Length; k++)
             {
                 double dx = x[k] - mx, dy = y[k] - my;
                 sxy += w[k] * dx * dy; sxx += w[k] * dx * dx; syy += w[k] * dy * dy;

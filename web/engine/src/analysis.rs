@@ -76,6 +76,11 @@ impl BetRamp {
         self.units.iter().fold(0.0, |m, &u| dmax(m, u))
     }
 
+    /// Largest amount on the table in one round: units per hand times hands.
+    pub fn max_bet(&self) -> f64 {
+        self.units.iter().zip(&self.hands).fold(0.0, |m, (&u, &h)| dmax(m, u * h.max(1) as f64))
+    }
+
     pub fn min_positive_units(&self) -> f64 {
         let m = self.units.iter().filter(|&&u| u > 0.0).fold(f64::MAX, |m, &u| dmin(m, u));
         if m == f64::MAX { 0.0 } else { m }
@@ -277,7 +282,7 @@ pub fn evaluate(d: &SimData, ramp: &BetRamp, unit: f64, rounds_per_hour: f64, ba
     res.edge_pct = ev / bet * 100.0;
     res.di = 1000.0 * ev / res.sd;
     res.score = if ev > 0.0 { 1e6 * ev * ev / res.var } else { 0.0 };
-    res.n0 = if ev != 0.0 { res.var / (ev * ev) } else { f64::INFINITY };
+    res.n0 = if ev > 0.0 { res.var / (ev * ev) } else { f64::INFINITY };
     res.hours_n0 = res.n0 / rounds_per_hour;
     res.se_ev = se_var.sqrt();
     res.win_per_hour = ev * rounds_per_hour * unit;
@@ -289,7 +294,7 @@ pub fn evaluate(d: &SimData, ramp: &BetRamp, unit: f64, rounds_per_hour: f64, ba
     res.ror = if ev > 0.0 { (-2.0 * ev * b_u / res.var).exp() } else { 1.0 };
     res.ce_per_hour = (ev - res.var / (2.0 * b_u)) * rounds_per_hour * unit;
     res.kelly_unit = if ev > 0.0 { bankroll * ev / m2 } else { 0.0 };
-    let (mx, mn) = (ramp.max_units(), ramp.min_positive_units());
+    let (mx, mn) = (ramp.max_bet(), ramp.min_positive_units());
     res.spread = if mn > 0.0 { mx / mn } else { 0.0 };
     res
 }

@@ -107,10 +107,29 @@ function validSim(d: SimData | null | undefined): d is SimData {
   return !!d && d.rounds > 0 && [d.n, d.sa, d.qa, d.sb, d.qb, d.ab].every((a) => a?.length === NUM_BINS);
 }
 
-/** JSON keeps Infinity as null: compare entries come back with their infinite N0 and bankroll restored. */
+/** The result fields of a Compare entry; an entry without a valid result has them all NaN. */
+const RESULT_FIELDS = [
+  "winPerHour", "sdPerHour", "winPer100", "sdPer100", "edgePct", "score", "di", "n0", "hoursN0", "ror", "avgBet",
+  "spread", "playedPct", "cePerHour", "bankroll5", "kellyUnit",
+] as const;
+
+/**
+ * JSON keeps NaN and Infinity as null: an entry without results (null SCORE) gets its NaNs back, any other entry its
+ * infinite N0 and bankroll (a losing game).
+ */
 function restoreEntry(e: CompareEntry): CompareEntry {
-  const fix = (v: number | null) => (v === null ? Infinity : v);
-  return { ...e, n0: fix(e.n0), hoursN0: fix(e.hoursN0), bankroll5: fix(e.bankroll5) };
+  const out = { ...e };
+  if ((e.score as number | null) === null) for (const f of RESULT_FIELDS) out[f] = NaN;
+  else for (const f of ["n0", "hoursN0", "bankroll5"] as const) if ((e[f] as number | null) === null) out[f] = Infinity;
+  return out;
+}
+
+/** Counts saved before 0.1.1 can carry Canfield Expert's old tags (the 2 counted +1): brings them up to date. */
+export function upgradeSavedCount(cs: CountSystem): CountSystem {
+  const old = [0, 1, 1, 1, 1, 1, 1, 0, -1, -1];
+  if (cs.name === "Canfield Expert" && !cs.redTags && cs.tags?.length === 10 && cs.tags.every((t, i) => t === old[i]))
+    return { ...cs, tags: cs.tags.map((t, i) => (i === 1 ? 0 : t)) };
+  return cs;
 }
 
 class AppState {
@@ -317,24 +336,25 @@ class AppState {
       unit: this.unit,
       roundsPerHour: this.rph,
       bankroll: this.bankroll,
-      winPerHour: 0,
-      sdPerHour: 0,
-      winPer100: 0,
-      sdPer100: 0,
-      edgePct: 0,
-      score: 0,
-      di: 0,
-      n0: 0,
-      hoursN0: 0,
-      ror: 0,
-      avgBet: 0,
-      spread: 0,
-      playedPct: 0,
-      cePerHour: 0,
+      // No simulation, or a ramp that never bets: no results rather than zeros, which would look best.
+      winPerHour: NaN,
+      sdPerHour: NaN,
+      winPer100: NaN,
+      sdPer100: NaN,
+      edgePct: NaN,
+      score: NaN,
+      di: NaN,
+      n0: NaN,
+      hoursN0: NaN,
+      ror: NaN,
+      avgBet: NaN,
+      spread: NaN,
+      playedPct: NaN,
+      cePerHour: NaN,
       houseEdge: -engine.houseEdge(this.rules),
-      bankroll5: 0,
-      kellyUnit: 0,
-      rounds: 0,
+      bankroll5: NaN,
+      kellyUnit: NaN,
+      rounds: this.sim?.rounds ?? 0,
       stale: this.simStale,
     };
     if (a && ev && this.sim) {
@@ -387,19 +407,20 @@ class AppState {
   /** Opens a scenario like the Windows app does; throws (and changes nothing) when the engine rejects its settings. */
   loadScenario(s: Scenario, fileName: string): void {
     const rules = { ...defaultRules(), ...s.rules };
+    const count = upgradeSavedCount(s.count);
     const strategy = { ...defaultStrategy(), ...s.strategy };
     const spots = Math.max(1, Math.min(7, Math.round(s.spots)));
-    engine.simKey(rules, s.count, strategy, spots);
+    engine.simKey(rules, count, strategy, spots);
     if (simulation.running) this.stop();
     this.rules = rules;
-    this.count = s.count;
+    this.count = count;
     this.strategy = strategy;
     this.spots = spots;
     this.autoRph = s.autoRoundsPerHour;
     this.manualRph = s.roundsPerHour > 0 ? Math.max(10, Math.min(400, s.roundsPerHour)) : RPH_TABLE[spots];
     this.unit = s.unit > 0 ? s.unit : 25;
     this.bankroll = s.bankroll > 0 ? s.bankroll : 25000;
-    this.ramp = validRamp(s.ramp) ? s.ramp : engine.defaultRamp(rules, s.count, null, s.rampPreset).ramp;
+    this.ramp = validRamp(s.ramp) ? s.ramp : engine.defaultRamp(rules, count, null, s.rampPreset).ramp;
     this.rampPreset = Math.max(0, Math.min(CUSTOM_PRESET, Math.round(s.rampPreset)));
     if (ROUND_OPTIONS.includes(s.simRounds)) this.simRounds = s.simRounds;
     // The thread count is a property of this device, not of the scenario (the file may come from a bigger PC).
@@ -441,7 +462,7 @@ class AppState {
     if (s?.version === 1) {
       try {
         const rules = { ...defaultRules(), ...s.rules };
-        const count = { ...structuredClone(presets[0]), ...s.count };
+        const count = upgradeSavedCount({ ...structuredClone(presets[0]), ...s.count });
         const strategy = { ...defaultStrategy(), ...s.strategy };
         const spots = number(s.spots, 1, 7, 3);
         engine.simKey(rules, count, strategy, spots); // throws on settings the engine rejects
