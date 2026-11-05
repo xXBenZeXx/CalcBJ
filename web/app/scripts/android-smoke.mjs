@@ -219,6 +219,47 @@ async function waitFor(what, seconds, test) {
   }
 }
 
+/**
+ * Waits until the package service answers, and the user's storage is unlocked, three times in a row a few seconds
+ * apart. An emulator reports that it has booted before both are reliably there, and a restart of its system server
+ * takes them away again for a while: an install sent then fails with "Failure calling service package: Broken pipe".
+ */
+async function waitForPackageService(seconds = 300) {
+  let streak = 0;
+  await waitFor("package service answering three times in a row", seconds, async () => {
+    let ready = false;
+    try {
+      const answers = /^package:/m.test(shell("pm path android", { check: false, timeout: 30_000 }));
+      // Empty on images that don't have the property: that counts as unlocked.
+      ready = answers && shell("getprop sys.user.0.ce_available", { check: false, timeout: 30_000 }) !== "false";
+    } catch {
+      // adb itself failed (the device went offline for a moment): not ready.
+    }
+    streak = ready ? streak + 1 : 0;
+    if (streak >= 3) return true;
+    await sleep(2500);
+    return false;
+  });
+}
+
+/** Installs the APK once the package service is there; tries again (copying the APK first) when that fails. */
+async function installApk(apk) {
+  let last = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await waitForPackageService();
+    try {
+      // --no-streaming from the second attempt on: adb copies the APK to the device, then installs it from there.
+      adb(["install", "-r", "-t", ...(attempt > 1 ? ["--no-streaming"] : []), apk], { timeout: 300_000 });
+      return attempt;
+    } catch (e) {
+      last = e;
+      console.log(`  install attempt ${attempt} failed: ${e.message}`);
+      await sleep(5000);
+    }
+  }
+  throw last;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The page, through the WebView's DevTools protocol.
 
@@ -741,7 +782,7 @@ async function main() {
     if (!connected) blocked = "no device";
 
     const started = await check("Install and start", true, async () => {
-      adb(["install", "-r", "-t", apk], { timeout: 300_000 });
+      const attempts = await installApk(apk);
       // A first start: no settings or results from before.
       shell(`pm clear ${PACKAGE}`);
       const seconds = await app.launch();
@@ -749,7 +790,8 @@ async function main() {
       device.webview = chromeVersion(info.userAgent) ?? info.userAgent;
       device.ready = `${seconds.toFixed(1)} s after launch`;
       screenshot("start");
-      return `ready ${seconds.toFixed(1)} s after "am start"; ${info.width}×${info.height} CSS px at ${info.dpr}×; ${info.cores} cores; ${info.userAgent}`;
+      const installed = attempts > 1 ? `installed at attempt ${attempts}; ` : "";
+      return `${installed}ready ${seconds.toFixed(1)} s after "am start"; ${info.width}×${info.height} CSS px at ${info.dpr}×; ${info.cores} cores; ${info.userAgent}`;
     });
     if (!started) blocked ??= "the app did not start";
 

@@ -315,9 +315,11 @@ jobs:
       - name: Test the app on an Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          # Android 17 with Google APIs: the API level Tauri's template targets, and the newest stable x86_64 image
-          # (so the newest System WebView there is); its version is in the test's summary.
-          api-level: "37.0"
+          # Android 16 with Google APIs. Not Android 17 (API 37, which the app targets): on GitHub's runners that image
+          # restarts its system server soon after booting (its emulated graphics abort, as other projects found), and
+          # in the first run here the package service went away under the install. The WebView's version is in the
+          # test's summary.
+          api-level: 36
           target: google_apis
           arch: x86_64
           profile: pixel_7
