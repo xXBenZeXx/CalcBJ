@@ -131,30 +131,25 @@ Android installs an update only when it is signed with the same key as the app o
 every APK with one key kept in the repository's secrets. Without them it still builds, but the APK is not signed (phones
 won't install it) and is not attached to the release.
 
-This PC has no Java, so create the key either with Docker Desktop, in PowerShell (it asks for a password, at least 6
-characters, for the file and the key alike). Start Docker Desktop first and wait until it says the engine is running;
-the first run also downloads Java's image, about 200 MB:
+This PC has no Java, but Git for Windows comes with OpenSSL, so everything runs in PowerShell. Git puts only its
+`cmd` folder on the PATH, so the first line tells this PowerShell window where `openssl` is. The `pkcs12` command
+asks for a password twice, at least 6 characters; it protects the file and the key alike:
 
 ```powershell
-New-Item -ItemType Directory -Force "$env:USERPROFILE\calcbj-signing" | Out-Null
-docker run --rm -it -v "$env:USERPROFILE\calcbj-signing:/keys" eclipse-temurin:21-jdk keytool -genkeypair -keystore /keys/calcbj-release.p12 -storetype PKCS12 -alias calcbj -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=CalcBJ"
-```
-
-or with the OpenSSL that comes with Git, in Git Bash (`openssl pkcs12` asks for the password; if it waits without a
-prompt, run it again with `winpty` in front). `MSYS_NO_PATHCONV=1` stops Git Bash from turning `/CN=CalcBJ` into a
-Windows path:
-
-```bash
-mkdir -p ~/calcbj-signing && cd ~/calcbj-signing
-MSYS_NO_PATHCONV=1 openssl req -x509 -newkey rsa:2048 -sha256 -days 10000 -nodes -keyout key.pem -out cert.pem -subj "/CN=CalcBJ"
+Set-Alias openssl "C:\Program Files\Git\mingw64\bin\openssl.exe"
+New-Item -ItemType Directory -Force "$env:USERPROFILE\calcbj-signing" | Out-Null; cd "$env:USERPROFILE\calcbj-signing"
+openssl req -x509 -newkey rsa:2048 -sha256 -days 10000 -nodes -keyout key.pem -out cert.pem -subj "/CN=CalcBJ"
 openssl pkcs12 -export -inkey key.pem -in cert.pem -name calcbj -out calcbj-release.p12
-rm key.pem cert.pem
+Remove-Item key.pem, cert.pem
 ```
 
-Then put it into the repository's secrets, in PowerShell (the last command asks for the password):
+(Without Git's OpenSSL, Docker Desktop does it too, once its engine is running:
+`docker run --rm -it -v "$env:USERPROFILE\calcbj-signing:/keys" eclipse-temurin:21-jdk keytool -genkeypair -keystore
+/keys/calcbj-release.p12 -storetype PKCS12 -alias calcbj -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=CalcBJ"`.)
+
+Then put it into the repository's secrets, in the same folder (the last command asks for the password):
 
 ```powershell
-cd "$env:USERPROFILE\calcbj-signing"
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\calcbj-release.p12")) | gh secret set ANDROID_KEYSTORE_BASE64 --repo xXBenZeXx/CalcBJ
 gh secret set ANDROID_KEY_ALIAS --body calcbj --repo xXBenZeXx/CalcBJ
 gh secret set ANDROID_KEY_PASSWORD --repo xXBenZeXx/CalcBJ
