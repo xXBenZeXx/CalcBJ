@@ -829,11 +829,29 @@ async function main() {
   };
 
   /**
+   * Closes a system dialog that has taken the focus, such as "System UI isn't responding" on a slow emulator, with Wait
+   * (or OK or Close app): it would take the taps meant for the app. Returns the window it closed, or null.
+   */
+  const closeSystemDialog = async () => {
+    const focus = /mCurrentFocus=Window\{[^}]*\}/.exec(windowFocus())?.[0] ?? "";
+    if (!/Application Not Responding|Application Error|isn't responding|has stopped|keeps stopping/i.test(focus)) return null;
+    const nodes = await screenDump("system-dialog");
+    const pick = (pattern) => nodes.find((n) => pattern.test(n.text) && n.bounds);
+    const button = pick(/^wait$/i) ?? pick(/^(ok|close app|close)$/i);
+    if (button) tapNode(button);
+    else key(KEY_BACK);
+    await sleep(1500);
+    log(`  (closed a system dialog with ${button ? `"${button.text}"` : "back"}: ${focus})`);
+    return focus;
+  };
+
+  /**
    * Taps one of the page's buttons with a real touch, as a user does. The back checks need that: Chromium's back
    * button skips every history entry of a page that added one without a user activation, and a click through the
    * DevTools protocol did not count as one in the first emulator runs (back then left the app at once).
    */
   const tapButton = async (label) => {
+    await closeSystemDialog();
     const target = await app.page("buttonRect", label);
     const origin = await webViewOrigin();
     const x = origin.left + ((target.rect.left + target.rect.right) / 2) * target.dpr;
@@ -875,6 +893,7 @@ async function main() {
    * also pauses a simulation of the phone app. Returns whether it had to.
    */
   const ensureVisible = async () => {
+    await closeSystemDialog();
     if ((await app.page("visibility")) === "visible") return false;
     shell("wm dismiss-keyguard", { check: false });
     shell(`am start -n ${ACTIVITY}`, { check: false });
@@ -889,6 +908,14 @@ async function main() {
       shell("svc power stayon true", { check: false });
       shell("settings put system screen_off_timeout 1800000", { check: false });
       shell("settings put global hide_error_dialogs 1", { check: false });
+      // Android reads hide_error_dialogs only when its configuration changes: a step of the font scale and back makes
+      // it count, so that a system app that stops answering is restarted rather than covering the screen with a
+      // dialog (in the fifth CI run "System UI isn't responding" took the taps meant for the app).
+      shell("settings put system font_scale 1.1", { check: false });
+      await sleep(1000);
+      shell("settings put system font_scale 1.0", { check: false });
+      // The on-screen keyboard even though the emulator has a hardware keyboard.
+      shell("settings put secure show_ime_with_hard_keyboard 1", { check: false });
       shell("wm dismiss-keyguard", { check: false });
       // No lock screen at all: Android shows it again whenever the system UI restarts, and the app behind it is hidden.
       shell("locksettings set-disabled true", { check: false });
@@ -1016,10 +1043,15 @@ async function main() {
       await waitFor("running simulation", 20, () => app.page("running"));
       // Should something cover the app anyway, it is brought back, and the paused run goes on.
       let broughtBack = 0;
+      let looked = 0;
       const stored = await waitFor("10M simulated rounds in calcbj.sims.v1", 300, async () => {
         const s = await app.storage();
         if (mostRounds(s) >= 10e6) return s;
-        if (await ensureVisible()) broughtBack++;
+        // Every 5 s at most: each look is a screen query, and the emulator has little to spare.
+        if (Date.now() - looked > 5000) {
+          looked = Date.now();
+          if (await ensureVisible()) broughtBack++;
+        }
         return null;
       }).catch(async (e) => {
         throw new Error(`${e.message}; ${await situation()}`);
@@ -1156,7 +1188,10 @@ async function main() {
       const dpr = target.dpr;
       tap(left + ((target.rect.left + target.rect.right) / 2) * dpr, top + ((target.rect.top + target.rect.bottom) / 2) * dpr);
       try {
-        await waitFor("keyboard on screen", 10, () => systemInsets().ime ?? null);
+        await waitFor("keyboard on screen", 10, () => systemInsets().ime ?? null).catch((e) => {
+          const keyboards = shell("ime list -s", { check: false }).split(/\s+/).filter(Boolean);
+          throw new Error(`${e.message}; keyboards: ${keyboards.join(", ") || "none"}; focus: ${focused() ?? "?"}`);
+        });
         // The page and the WebView make room for the keyboard.
         await sleep(1500);
         screenshot("keyboard");
