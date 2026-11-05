@@ -246,7 +246,7 @@ fn handle(req: &Value) -> Result<Value, String> {
                     })
                     .collect();
                 let ca = at.map_or(&pt.basic_result, |v| pt.result_at(v));
-                json!({ "codes": codes, "cellEv": ca.cell_ev, "ev": ca.player_ev })
+                json!({ "codes": codes, "cellEv": ca.cell_ev })
             }))
         }
         "defaultRamp" => {

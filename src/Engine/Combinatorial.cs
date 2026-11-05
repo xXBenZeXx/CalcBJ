@@ -16,7 +16,10 @@ namespace CalcBJ.Engine
         /// <summary>Decision flags per cell (see PlayTable cell layout).</summary>
         public byte[] Flags;
         public bool Insure;
-        /// <summary>Player expectation per initial unit for a round dealt from this composition (negative = house edge).</summary>
+        /// <summary>
+        /// Player expectation per initial unit for a round dealt from this composition (negative = house edge). NaN for an
+        /// analysis at a count (CountModel): its deals are weighted by the shoe, not by the count.
+        /// </summary>
         public double PlayerEV;
         /// <summary>Insurance EV per unit of original bet when the dealer shows an ace.</summary>
         public double InsuranceEV;
@@ -27,12 +30,15 @@ namespace CalcBJ.Engine
     /// <summary>
     /// The unseen cards at a known count, for index plays. The player decides after seeing the upcard and their own two
     /// cards, so the count already includes them: for each deal, the cards left after that upcard and hand are shifted by
-    /// linear regression on the tags until the unseen cards' tags add up to UnseenTags.
+    /// the linear regression of the rank counts on the tag sum to the composition expected when the unseen cards' tags
+    /// add up to UnseenTags.
     /// </summary>
     public sealed class CountModel
     {
         /// <summary>[1..10] average tag of each rank.</summary>
         public double[] Tags;
+        /// <summary>[1..10] variance of the tags within each rank, where red and black cards count differently; null if none do.</summary>
+        public double[] TagVar;
         /// <summary>Sum of the tags of the unseen cards.</summary>
         public double UnseenTags;
         /// <summary>Number of unseen cards.</summary>
@@ -198,7 +204,9 @@ namespace CalcBJ.Engine
 
         /// <summary>
         /// The model's unseen cards out of the population left after a deal: q_r = n p_r (1 + (t_r - m) x) with
-        /// x = (s/n - m) / V, where p, m and V are the population's rank shares, mean tag and tag variance. Returns their sum.
+        /// x = (s/n - m) / V, where p, m and V are the population's rank shares, mean tag and tag variance per card. The
+        /// variance includes the spread between a rank's red and black cards: the tag sum also depends on their colours,
+        /// which the rank counts don't show. Returns the cards' sum.
         /// </summary>
         static double Regress(double[] popl, CountModel model, double[] outc)
         {
@@ -210,7 +218,7 @@ namespace CalcBJ.Engine
             {
                 if (popl[r] <= 0) continue;
                 double d = model.Tags[r] - mean;
-                V += popl[r] / M * d * d;
+                V += model.TagVar != null ? popl[r] / M * (d * d + model.TagVar[r]) : popl[r] / M * d * d;
                 maxDev = Math.Max(maxDev, Math.Abs(d));
             }
             double x = V > 1e-12 ? (model.UnseenTags / n - mean) / V : 0;
@@ -434,7 +442,7 @@ namespace CalcBJ.Engine
             if (res.Insure) evTotal += (shoe[1] / N) * res.InsuranceEV;
 
             res.Flags = flags;
-            res.PlayerEV = evTotal;
+            res.PlayerEV = model == null ? evTotal : double.NaN;
             res.CellEV = cellEV;
             return res;
         }
@@ -450,16 +458,25 @@ namespace CalcBJ.Engine
         // ---------------- Exact expectation of a strategy off the top ----------------
 
         // Raw dealer distributions keyed by game, upcard and the player's cards. Shared by the engines of a thread: the
-        // Game page asks for many rule variants in a row, and most of them deal the same cards.
+        // Game page asks for many rule variants in a row, and most of them deal the same cards. One game (number of decks
+        // and soft-17 rule) needs about 26,000 of them; the limit holds the six games of a Game page refresh.
         [ThreadStatic] static Dictionary<long, double[]> dealerCache;
-        const int DealerCacheLimit = 1 << 17;
+        const int DealerCacheLimit = 1 << 18;
 
         readonly double[] xc = new double[11];
         readonly Dictionary<long, double> handMemo = new Dictionary<long, double>();
+        readonly Dictionary<long, double> splitMemo = new Dictionary<long, double>();
         byte[] xFlags;
         int xUp;
         long xGame;
         bool xTakesAll;
+
+        // The split being worked out: pair rank, resplits so far (pair cards out besides the two dealt), most hands, and
+        // per number of resplits the chance of drawing the pair rank and the values of a hand without and with it.
+        int sRank, sLevel, sMaxHands;
+        readonly double[] splitP = new double[3];
+        readonly double[] splitX = new double[3];
+        readonly double[] splitY = new double[3];
 
         /// <summary>Adds a card of rank r to a hand key (5 bits per rank).</summary>
         static long WithCard(long cards, int r)
@@ -502,26 +519,30 @@ namespace CalcBJ.Engine
             return -bet * (1 - pb);
         }
 
-        /// <summary>Value of a hand of three or more cards, played by the flags as the simulator plays it.</summary>
-        double Play(long cards, double n, int h, bool ace)
+        /// <summary>
+        /// Value of a hand of three or more cards, played by the flags as the simulator plays it. In a split hand, cards
+        /// also holds the cards of the split that are out of the shoe but not in this hand (see SplitExact).
+        /// </summary>
+        double Play(long cards, double n, int h, bool ace, bool split)
         {
-            long key = cards * 16 + xUp;
+            long key = split ? ((cards * 16 + xUp) * 16 + sRank) * 4 + sLevel : cards * 16 + xUp;
+            var memo = split ? splitMemo : handMemo;
             double v;
-            if (handMemo.TryGetValue(key, out v)) return v;
+            if (memo.TryGetValue(key, out v)) return v;
             bool soft = ace && h <= 11;
             int best = soft ? h + 10 : h;
             if (best == 21) v = Terminal(cards, n, 21, 1);
             else
             {
                 int cell = soft ? PlayTable.SoftCell(best, xUp) : PlayTable.HardCell(h, xUp);
-                v = (xFlags[cell] & Flag.Stand) != 0 ? Terminal(cards, n, best, 1) : Draw(cards, n, h, ace, 1);
+                v = (xFlags[cell] & Flag.Stand) != 0 ? Terminal(cards, n, best, 1) : Draw(cards, n, h, ace, 1, split);
             }
-            handMemo[key] = v;
+            memo[key] = v;
             return v;
         }
 
         /// <summary>Takes one card: a hit (bet 1, then plays on) or a double (bet 2, then stands).</summary>
-        double Draw(long cards, double n, int h, bool ace, int bet)
+        double Draw(long cards, double n, int h, bool ace, int bet, bool split)
         {
             double ev = 0;
             for (int r = 1; r <= 10; r++)
@@ -535,34 +556,110 @@ namespace CalcBJ.Engine
                 double v;
                 if (h2 > 21) v = Bust(n - 1, bet);
                 else if (bet == 2) v = Terminal(WithCard(cards, r), n - 1, (a2 && h2 <= 11) ? h2 + 10 : h2, 2);
-                else v = Play(WithCard(cards, r), n - 1, h2, a2);
+                else v = Play(WithCard(cards, r), n - 1, h2, a2, split);
                 ev += pr * v;
                 xc[r] = cr;
             }
             return ev;
         }
 
-        /// <summary>Split EV of a pair exactly as Evaluate works it out (xc holds the cards left after the deal).</summary>
-        double SplitOffTop(int u, int a, double Np, double pBJ, bool peekCond)
+        /// <summary>
+        /// A split hand of the pair card a and its second card r (already out of xc and in cards), played as the
+        /// simulator plays it: split aces get one card unless they may be hit, and doubling needs DAS and isn't allowed
+        /// on split aces.
+        /// </summary>
+        double SplitHand(long cards, double n, int a, int r)
         {
-            for (int r = 1; r <= 10; r++) sp[r] = xc[r];
-            dags[u].Evaluate(sp, Np, mass, dist);
-            double dBJ = 0;
-            if (peekCond) { double nb = 1 - dist[6]; if (nb > 1e-12) for (int k = 0; k < 6; k++) dist[k] /= nb; }
-            else dBJ = dist[6];
-            FillStand(dBJ);
-            for (int r = 1; r <= 10; r++) p[r] = sp[r] / Np;
-            FillDP();
-            double evP = SplitEV(a);
-            if (peekCond && pBJ > 0) evP = -pBJ + (1 - pBJ) * evP;
-            return evP;
+            int h = a + r;
+            bool ace = a == 1 || r == 1;
+            bool soft = ace && h <= 11;
+            int best = soft ? h + 10 : h;
+            if (a == 1 && !R.HitSplitAces) return Terminal(cards, n, best, 1);
+            if (best == 21) return Terminal(cards, n, 21, 1);
+            byte f = xFlags[soft ? PlayTable.SoftCell(best, xUp) : PlayTable.HardCell(h, xUp)];
+            if ((f & Flag.Double) != 0 && R.DAS && a != 1 && R.CanDoubleTotal(h, soft)) return Draw(cards, n, h, ace, 2, true);
+            if ((f & Flag.Stand) != 0) return Terminal(cards, n, best, 1);
+            return Draw(cards, n, h, ace, 1, true);
+        }
+
+        /// <summary>Total value of the split hands still to come: pending hands waiting for their second card, of hands in all.</summary>
+        double SplitDP(int pending, int hands)
+        {
+            if (pending == 0) return 0;
+            int j = hands - 2;
+            double pp = splitP[j];
+            double v = (1 - pp) * (splitX[j] + SplitDP(pending - 1, hands));
+            if (hands < sMaxHands) v += pp * SplitDP(pending + 1, hands + 1);
+            else v += pp * (splitY[j] + SplitDP(pending - 1, hands));
+            return v;
+        }
+
+        /// <summary>
+        /// Expectation of splitting a pair of a, played as the simulator plays it (xc holds the cards left after the deal).
+        /// Every split hand is played exactly with its own cards, the pair cards and the pair cards of earlier resplits
+        /// out of the shoe. The cards of the other split hands stay in: in shuffle-every-round simulations of 1 to 8 decks
+        /// that makes no measurable difference (0.002% or less), where the analysis's fixed draw odds were up to 0.02%
+        /// too low with one deck.
+        /// </summary>
+        double SplitExact(int a, double Np, double pBJ, bool peekCond)
+        {
+            int maxHands = Math.Min(R.MaxSplitHands, 4);
+            if (a == 1 && !R.ResplitAces) maxHands = 2;
+            sRank = a;
+            sMaxHands = maxHands;
+            long cards = WithCard(WithCard(0, a), a);
+            double n = Np;
+            int taken = 0;
+            for (int j = 0; j <= maxHands - 2; j++)
+            {
+                if (j > 0)
+                {
+                    // Every resplit puts one more pair card on the table.
+                    if (xc[a] < 1)
+                    {
+                        // No pair card left to resplit with: this many resplits can't happen.
+                        splitP[j] = 0; splitX[j] = 0; splitY[j] = 0;
+                        continue;
+                    }
+                    xc[a] -= 1;
+                    cards = WithCard(cards, a);
+                    n -= 1;
+                    taken++;
+                }
+                sLevel = j;
+                double na = xc[a];
+                double pp = na / n;
+                double sum = 0;
+                for (int r = 1; r <= 10; r++)
+                {
+                    double cr = xc[r];
+                    if (r == a || cr <= 0) continue;
+                    xc[r] = cr - 1;
+                    sum += cr / n * SplitHand(WithCard(cards, r), n - 1, a, r);
+                    xc[r] = cr;
+                }
+                splitP[j] = pp;
+                splitX[j] = pp < 1 ? sum / (1 - pp) : 0;
+                splitY[j] = 0;
+                if (j == maxHands - 2 && na > 0)
+                {
+                    // At the most hands a further pair card is played as it is.
+                    xc[a] = na - 1;
+                    splitY[j] = SplitHand(WithCard(cards, a), n - 1, a, a);
+                    xc[a] = na;
+                }
+            }
+            xc[a] += taken;
+            double ev = SplitDP(2, 2);
+            if (peekCond) ev -= pBJ;
+            return ev;
         }
 
         /// <summary>
         /// Off-the-top expectation of the strategy in basic (its flags and insurance) with every card the player draws
-        /// taken out of the shoe: hits and doubles follow the flags exactly as the simulator plays them. Evaluate's
-        /// PlayerEV assumes the best play after each hit, with the draw odds fixed after the first three cards, which is
-        /// up to 0.04% too high with one deck. Splits keep Evaluate's approximation. In peek games each deal loses its
+        /// taken out of the shoe: hits, doubles and split hands follow the flags exactly as the simulator plays them
+        /// (splits as in SplitExact). Evaluate's PlayerEV assumes the best play after each hit, with the draw odds fixed
+        /// after the first three cards, which is up to 0.04% too high with one deck. In peek games each deal loses its
         /// blackjack probability once and the dealer's blackjacks are left out of every later outcome, which is exact
         /// because the order of the unseen cards doesn't matter.
         /// </summary>
@@ -572,6 +669,7 @@ namespace CalcBJ.Engine
             if (dealerCache == null) dealerCache = new Dictionary<long, double[]>();
             xGame = R.Decks * 2 + (R.H17 ? 1 : 0);
             handMemo.Clear();
+            splitMemo.Clear();
             xFlags = basic.Flags;
             xTakesAll = R.DealerBJTakesAll;
             bool surrAllowed = R.Surrender != SurrenderRule.None;
@@ -614,14 +712,14 @@ namespace CalcBJ.Engine
                         double evR = srBeforePeek ? -0.5 : -pBJ - 0.5 * (1 - pBJ);
                         double ev;
                         if (surrAllowed && (pf & Flag.Surrender) != 0) ev = evR;
-                        else if ((pf & Flag.Split) != 0) ev = SplitOffTop(u, a, Np, pBJ, peekCond);
+                        else if ((pf & Flag.Split) != 0) ev = SplitExact(a, Np, pBJ, peekCond);
                         else if (surrAllowed && (tf & Flag.Surrender) != 0) ev = evR;
                         else
                         {
                             long cards = WithCard(WithCard(0, a), b);
-                            if ((tf & Flag.Double) != 0 && R.CanDoubleTotal(h0, soft0)) ev = Draw(cards, Np, h0, ace0, 2);
+                            if ((tf & Flag.Double) != 0 && R.CanDoubleTotal(h0, soft0)) ev = Draw(cards, Np, h0, ace0, 2, false);
                             else if ((tf & Flag.Stand) != 0) ev = Terminal(cards, Np, soft0 ? h0 + 10 : h0, 1);
-                            else ev = Draw(cards, Np, h0, ace0, 1);
+                            else ev = Draw(cards, Np, h0, ace0, 1, false);
                             if (peekCond) ev -= pBJ;
                         }
                         evTotal += pu * w * ev;

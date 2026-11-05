@@ -25,7 +25,6 @@ namespace CalcBJ.Engine
         public byte[] Basic;
         public CAResult BasicResult;
         public double[] BinTcEq;
-        public double[] BinEV;
         public string Key;
         /// <summary>CA results for the count values inside the index range (null for basic strategy only).</summary>
         public CAResult[] PerBin;
@@ -236,8 +235,7 @@ namespace CalcBJ.Engine
             pt.Flags = new byte[PlayTable.NumBins * CPB];
             pt.Insure = new bool[PlayTable.NumBins];
             pt.BinTcEq = new double[PlayTable.NumBins];
-            pt.BinEV = new double[PlayTable.NumBins];
-            for (int i = 0; i < PlayTable.NumBins; i++) { pt.BinEV[i] = double.NaN; pt.BinTcEq[i] = double.NaN; }
+            for (int i = 0; i < PlayTable.NumBins; i++) pt.BinTcEq[i] = double.NaN;
 
             var basicEngine = new CAEngine(rules);
             pt.BasicResult = basicEngine.Evaluate(CAEngine.FullShoe(rules.Decks));
@@ -255,6 +253,17 @@ namespace CalcBJ.Engine
                 var full = CAEngine.FullShoe(rules.Decks);
                 var tags = new double[11];
                 for (int r = 1; r <= 10; r++) tags[r] = cs.RankTag(r);
+                double[] tagVar = null;
+                if (cs.RedTags != null)
+                {
+                    // Red and black cards of a rank sit half a tag difference either side of the rank's average tag.
+                    tagVar = new double[11];
+                    for (int r = 1; r <= 10; r++)
+                    {
+                        double h = 0.5 * (cs.RedTags[r - 1] - cs.Tags[r - 1]);
+                        tagVar[r] = h * h;
+                    }
+                }
                 double totalTags = cs.ImbalancePerDeck() * rules.Decks, irc = cs.Irc(rules.Decks);
                 var unseen = new double[PlayTable.NumBins];
                 var unseenMean = new double[PlayTable.NumBins];
@@ -264,6 +273,7 @@ namespace CalcBJ.Engine
                     // The count when the player decides includes the upcard and their cards (see CountModel).
                     var model = new CountModel();
                     model.Tags = tags;
+                    model.TagVar = tagVar;
                     int b = lo + i - PlayTable.BinMin;
                     if (!double.IsNaN(unseen[b]))
                     {
@@ -290,11 +300,7 @@ namespace CalcBJ.Engine
                 int v = PlayTable.BinMin + b;
                 int vc = Math.Max(lo, Math.Min(hi, v));
                 CAResult src = perBin == null ? null : perBin[vc - lo];
-                if (src != null)
-                {
-                    pt.BinTcEq[b] = TcEquivalent(cs, rules, Representative(cs, vc));
-                    pt.BinEV[b] = src.PlayerEV;
-                }
+                if (src != null) pt.BinTcEq[b] = TcEquivalent(cs, rules, Representative(cs, vc));
                 int off = b * CPB;
                 switch (sc.Mode)
                 {

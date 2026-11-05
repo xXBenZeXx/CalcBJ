@@ -26,7 +26,7 @@ everything in Rust and compares:
 |---|---|
 | `ca.json` | 18 rule sets: rule texts, cut cards, and the full analysis (flags and per-cell EVs) off the top, for two count-shifted shoes and a depleted shoe; dealer probabilities for every upcard |
 | `counts.json` | 18 count systems: tags, scale, IRC, texts, true-count equivalents, shifted shoes, count lookups for three shoes |
-| `strategy.json` | 16 strategy tables (basic, I18, I18 + Fab 4, full, KO/Red Seven running counts, custom red tags, overrides, reversed range): every flag at every count, per-count EVs, the index list |
+| `strategy.json` | 16 strategy tables (basic, I18, I18 + Fab 4, full, KO/Red Seven running counts, custom red tags, overrides, reversed range): every flag at every count, the analysis at every count of the index range, the index list |
 | `sim.json` | 16 seeded single-thread simulations (about 10 million rounds, 1–7 spots, peek/ENHC/OBO, ES/LS, reshuffles): every tally must be identical |
 | `analysis.json` | per-count statistics, 18 bet-ramp evaluations, 18 optimiser runs, normal/ROR formulas |
 

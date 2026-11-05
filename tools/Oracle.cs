@@ -392,7 +392,6 @@ static class Oracle
             foreach (bool x in pt.Insure) ins.Append(x ? '1' : '0');
             w.Key("insure").Val(ins.ToString());
             w.Key("binTcEq").Val(pt.BinTcEq);
-            w.Key("binEV").Val(pt.BinEV);
             w.Key("basicEV").Val(pt.BasicResult.PlayerEV);
             w.Key("basicFlags").Val(Hex(pt.Basic, 0, CPB));
             w.Key("perBinMin").Val(pt.PerBinMin);

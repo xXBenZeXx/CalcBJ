@@ -39,7 +39,6 @@ fn strategy_tables() {
         let insure: String = pt.insure.iter().map(|&x| if x { '1' } else { '0' }).collect();
         c.eq(&format!("{label}: insure"), insure, text(&case["insure"]).to_string());
         c.nums(&format!("{label}: bin TC equivalent"), &pt.bin_tc_eq, &nums(&case["binTcEq"]), 0.0);
-        c.nums(&format!("{label}: bin EV"), &pt.bin_ev, &nums(&case["binEV"]), 1e-14);
         c.num(&format!("{label}: basic EV"), pt.basic_result.player_ev, num(&case["basicEV"]), 1e-14);
         c.eq(&format!("{label}: basic flags"), pt.basic().to_vec(), hex(text(&case["basicFlags"])));
         c.eq(&format!("{label}: per-bin min"), pt.per_bin_min as i64, int(&case["perBinMin"]));

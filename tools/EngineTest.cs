@@ -73,15 +73,21 @@ static class EngineTest
             foreach (var info in StrategyBuilder.DescribeIndices(pt, -10, 10))
                 Console.WriteLine("  {0,-12} {1}", info.Hand, info.Text);
             for (int v = -6; v <= 8; v++)
-                Console.WriteLine("  TC {0,3}: tcEq {1,6:0.00}  CA EV {2,7:0.000}%", v, pt.BinTcEq[v - PlayTable.BinMin], pt.BinEV[v - PlayTable.BinMin] * 100);
+                Console.WriteLine("  TC {0,3}: tcEq {1,6:0.00}", v, pt.BinTcEq[v - PlayTable.BinMin]);
         }
         if (mode == "offtop")
         {
-            long rounds = args.Length > 1 ? long.Parse(args[1]) : 200000000;
+            // 2 billion rounds per game (about 15 s each) make one standard error 0.0026%: enough to catch the 0.01-0.02%
+            // the split approximation used to cost with one or two decks.
+            long rounds = args.Length > 1 ? long.Parse(args[1]) : 2000000000;
             var list = new System.Collections.Generic.List<System.Tuple<string, Rules>>();
             list.Add(System.Tuple.Create("6D S17 DAS LS SP4", R(6, false, true, SurrenderRule.Late, 4, false)));
             list.Add(System.Tuple.Create("6D H17 DAS noSurr SP4", R(6, true, true, SurrenderRule.None, 4, false)));
             list.Add(System.Tuple.Create("1D H17 noDAS noSurr SP2", R(1, true, false, SurrenderRule.None, 2, false)));
+            list.Add(System.Tuple.Create("1D S17 DAS SP4 RSA", R(1, false, true, SurrenderRule.None, 4, true)));
+            var hsa1 = R(1, false, true, SurrenderRule.None, 4, true); hsa1.HitSplitAces = true;
+            list.Add(System.Tuple.Create("1D S17 DAS SP4 RSA HSA", hsa1));
+            list.Add(System.Tuple.Create("2D H17 DAS LS SP4", R(2, true, true, SurrenderRule.Late, 4, false)));
             list.Add(System.Tuple.Create("2D S17 DAS LS SP4 RSA", R(2, false, true, SurrenderRule.Late, 4, true)));
             var e1 = R(6, false, true, SurrenderRule.None, 4, false); e1.HoleCard = HoleCardRule.ENHC;
             list.Add(System.Tuple.Create("6D S17 DAS ENHC", e1));
@@ -113,6 +119,19 @@ static class EngineTest
                     t.Item1, flat.EV * 100, flat.SeEV * 100, ca * 100, (flat.EV - ca) * 100, z, d.Rounds / d.Seconds / 1e6);
                 Check(Math.Abs(z) <= 3.5, t.Item1 + ": simulation and analysis differ by " + z.ToString("0.0", CultureInfo.InvariantCulture) + " SE");
             }
+        }
+        if (mode == "regress" || mode == "all")
+        {
+            // The composition at a count (index generation): how much each rank's expected number of unseen cards moves
+            // per unit of their tag sum must match random draws of unseen cards, red and black tags included.
+            var presets = CountSystem.Presets();
+            var colours = presets[0].Clone();
+            colours.Name = "Hi-Lo with red 7 +1 / black 7 -1, red 9 -1 / black 9 +1";
+            colours.Tags = new double[] { -1, 1, 1, 1, 1, 1, -1, 0, 1, -1 };
+            colours.RedTags = new double[] { -1, 1, 1, 1, 1, 1, 1, 0, -1, -1 };
+            foreach (var cs in new[] { presets[0], presets[5], presets[11], colours })
+                foreach (int decks in new[] { 1, 6 })
+                    RegressCheck(cs, decks, decks == 1 ? 2000000 : 400000);
         }
         if (mode == "bench")
         {
@@ -279,6 +298,104 @@ static class EngineTest
         sim.Start(); done.WaitOne();
         if (sim.Error != null) throw sim.Error;
         return sim.Snapshot();
+    }
+
+    /// <summary>
+    /// Draws random sets of unseen cards from a shoe without a ten-ten-six deal and compares the least-squares slope of
+    /// each rank's count on the set's tag sum with the slope of the count model (CAEngine.Regress, the composition used
+    /// for index plays). Tens and sixes count the same in red and black in every tested count, so the colours of the
+    /// population stay even, as the model assumes.
+    /// </summary>
+    static void RegressCheck(CountSystem cs, int decks, int samples)
+    {
+        var codes = new System.Collections.Generic.List<int>();
+        var left = new int[20];
+        for (int code = 0; code < 20; code++) left[code] = decks * (code >= 18 ? 8 : 2);
+        left[18]--; left[19]--; left[10]--;   // upcard ten, player's ten and six
+        for (int code = 0; code < 20; code++) for (int k = 0; k < left[code]; k++) codes.Add(code);
+        int[] deck = codes.ToArray();
+        int m = deck.Length, n = m / 2;
+        var popl = new double[11];
+        double tagSum = 0;
+        foreach (int code in deck) { popl[(code >> 1) + 1]++; tagSum += cs.TagOfCode(code); }
+
+        var model = new CountModel();
+        model.Tags = new double[11];
+        for (int r = 1; r <= 10; r++) model.Tags[r] = cs.RankTag(r);
+        if (cs.RedTags != null)
+        {
+            model.TagVar = new double[11];
+            for (int r = 1; r <= 10; r++) { double h = 0.5 * (cs.RedTags[r - 1] - cs.Tags[r - 1]); model.TagVar[r] = h * h; }
+        }
+        model.Unseen = n;
+        double s0 = tagSum * n / m;
+        var slope = ModelSlope(popl, model, s0);
+        double[] oldSlope = null;
+        if (model.TagVar != null)
+        {
+            var tv = model.TagVar;
+            model.TagVar = null;   // the earlier model: the variance of the ranks' average tags only
+            oldSlope = ModelSlope(popl, model, s0);
+            model.TagVar = tv;
+        }
+
+        // Sampled slope of each rank's count on the tag sum, around the population means.
+        double sx = 0, sxx = 0;
+        var sy = new double[11]; var sxy = new double[11]; var syy = new double[11];
+        var cnt = new int[11];
+        ulong state = 0x2545F4914F6CDD1DUL ^ (ulong)(decks * 131 + cs.Name.Length);
+        for (int i = 0; i < samples; i++)
+        {
+            Array.Clear(cnt, 0, 11);
+            double s = 0;
+            for (int k = 0; k < n; k++)
+            {
+                state += 0x9E3779B97F4A7C15UL;
+                ulong z = state;
+                z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+                z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+                z ^= z >> 31;
+                int j = k + (int)((z >> 32) * (ulong)(m - k) >> 32);
+                int c = deck[j]; deck[j] = deck[k]; deck[k] = c;
+                s += cs.TagOfCode(c);
+                cnt[(c >> 1) + 1]++;
+            }
+            double x = s - s0;
+            sx += x; sxx += x * x;
+            for (int r = 1; r <= 10; r++)
+            {
+                double y = cnt[r] - popl[r] * n / m;
+                sy[r] += y; sxy[r] += x * y; syy[r] += y * y;
+            }
+        }
+        double cxx = sxx - sx * sx / samples;
+        double worst = 0, worstOld = 0;
+        for (int r = 1; r <= 10; r++)
+        {
+            double cxy = sxy[r] - sx * sy[r] / samples, cyy = syy[r] - sy[r] * sy[r] / samples;
+            double b = cxy / cxx;
+            double se = Math.Sqrt(Math.Max(1e-30, (cyy - b * cxy) / (samples - 2) / cxx));
+            worst = Math.Max(worst, Math.Abs(slope[r] - b) / se);
+            if (oldSlope != null) worstOld = Math.Max(worstOld, Math.Abs(oldSlope[r] - b) / se);
+        }
+        Console.WriteLine("{0,-58} {1}D: largest slope difference {2,4:0.0} SE{3}", cs.Name, decks, worst,
+            oldSlope != null ? string.Format(CultureInfo.InvariantCulture, " (without the red/black spread {0:0.0} SE)", worstOld) : "");
+        Check(worst <= 4, cs.Name + " " + decks + "D: the count model's composition differs from random draws by " + worst.ToString("0.0", CultureInfo.InvariantCulture) + " SE");
+    }
+
+    /// <summary>The model's change in each rank's unseen cards per unit of their tag sum, around s0.</summary>
+    static double[] ModelSlope(double[] popl, CountModel model, double s0)
+    {
+        var regress = typeof(CAEngine).GetMethod("Regress", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var lo = new double[11];
+        var hi = new double[11];
+        model.UnseenTags = s0 - 0.5;
+        regress.Invoke(null, new object[] { popl, model, lo });
+        model.UnseenTags = s0 + 0.5;
+        regress.Invoke(null, new object[] { popl, model, hi });
+        var slope = new double[11];
+        for (int r = 1; r <= 10; r++) slope[r] = hi[r] - lo[r];
+        return slope;
     }
 
     static int DealerDag_Count(int u)

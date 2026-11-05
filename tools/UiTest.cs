@@ -128,8 +128,11 @@ static class UiTest
         Check(!form.CurrentSim.IsRunning && state.SimStale, "after a change, results are marked out of date and nothing re-runs");
         form.StartSim();
         Pump(100);
+        var started = form.CurrentSim;
         ((ComboBox)Get(g0, "soft17")).SelectedIndex = 0;
-        Check(form.CurrentSim.IsRunning, "a run you started keeps going when a setting changes");
+        // The Game page's analysis of the new rules can outlast this short run, so finishing it counts as keeping going.
+        Check(form.CurrentSim == started && (started.IsRunning || (!started.Cancelled && started.Done == started.Target)),
+            "a run you started keeps going when a setting changes");
         WaitSim();
         Check(state.SimStale, "its results are then shown as out of date");
         ((ComboBox)Get(g0, "soft17")).SelectedIndex = 1;

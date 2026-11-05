@@ -35,7 +35,6 @@ pub struct PlayTable {
     pub insure: Vec<bool>,
     pub basic_result: CaResult,
     pub bin_tc_eq: Vec<f64>,
-    pub bin_ev: Vec<f64>,
     pub key: String,
     /// CA results for the count values inside the index range (None for basic strategy only).
     pub per_bin: Option<Vec<CaResult>>,
@@ -194,7 +193,6 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
     let mut flags = vec![0u8; NUM_BINS * CPB];
     let mut insure = vec![false; NUM_BINS];
     let mut bin_tc_eq = vec![f64::NAN; NUM_BINS];
-    let mut bin_ev = vec![f64::NAN; NUM_BINS];
 
     let mut engine = CaEngine::new(rules);
     let mut basic_result = engine.evaluate(&full_shoe(rules.decks as f64));
@@ -210,6 +208,15 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
         for (r, t) in tags.iter_mut().enumerate().skip(1) {
             *t = cs.rank_tag(r);
         }
+        // Red and black cards of a rank sit half a tag difference either side of the rank's average tag.
+        let tag_var = cs.red_tags.map(|red| {
+            let mut tv = [0.0; 11];
+            for (r, v) in tv.iter_mut().enumerate().skip(1) {
+                let h = 0.5 * (red[r - 1] - cs.tags[r - 1]);
+                *v = h * h;
+            }
+            tv
+        });
         let total_tags = cs.imbalance_per_deck() * rules.decks as f64;
         let irc = cs.irc(rules.decks);
         let (unseen, unseen_mean) = bin_moments(rules, cs);
@@ -218,12 +225,12 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
             .map(|v| {
                 let b = (v - BIN_MIN) as usize;
                 if !unseen[b].is_nan() {
-                    CountModel { tags, unseen: unseen[b], unseen_tags: unseen_mean[b] * unseen[b] }
+                    CountModel { tags, tag_var, unseen: unseen[b], unseen_tags: unseen_mean[b] * unseen[b] }
                 } else {
                     // A count this game never reaches: extend from the bin's representative value at mid depth.
                     let rep = representative(cs, v);
                     let rc = if cs.metric == CountMetric::TrueCount { rep * d_mid } else { rep };
-                    CountModel { tags, unseen: 52.0 * d_mid, unseen_tags: total_tags - (rc - irc) }
+                    CountModel { tags, tag_var, unseen: 52.0 * d_mid, unseen_tags: total_tags - (rc - irc) }
                 }
             })
             .collect();
@@ -236,9 +243,8 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
         let v = BIN_MIN + b as i32;
         let vc = v.clamp(lo, hi);
         let src = per_bin.as_ref().map(|p| &p[(vc - lo) as usize]);
-        if let Some(src) = src {
+        if src.is_some() {
             bin_tc_eq[b] = tc_equivalent(cs, rules, representative(cs, vc));
-            bin_ev[b] = src.player_ev;
         }
         let off = b * CPB;
         let row = &mut flags[off..off + CPB];
@@ -271,7 +277,6 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
         insure,
         basic_result,
         bin_tc_eq,
-        bin_ev,
         key: key_of(rules, cs, sc),
         per_bin,
         per_bin_min: if sc.mode != IndexMode::BasicOnly { lo } else { 0 },

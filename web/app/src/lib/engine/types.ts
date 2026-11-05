@@ -215,7 +215,6 @@ export interface ChartData {
   codes: string[];
   /** EV of stand, hit, double, surrender and split per cell (5 per cell, null where not possible). */
   cellEv: (number | null)[];
-  ev: number;
 }
 
 export interface RampResult {

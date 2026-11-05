@@ -28,12 +28,13 @@ Scenarios save to `.bjev` files (including simulation results); reports export t
 * **Combinatorial engine** (`src/Engine/Combinatorial.cs`, `DealerDag.cs`): exact dealer probabilities with card
   removal for every player two-card hand and upcard (the dealer's draws are enumerated as multisets, so this is fast:
   ~1–3 ms per full analysis), optimal hit/stand/double/split (with resplits)/surrender, total-dependent decisions.
-  The house edge off the top then plays that strategy exactly: hits and doubles with full card removal for every
-  hand (splits keep the analysis's approximation).
+  The house edge off the top then plays that strategy exactly, as the simulator does: hits, doubles and split hands
+  with full card removal (a split hand with its own cards and the pair cards out of the shoe; leaving the other split
+  hands' cards in makes no measurable difference).
 * **Index generation** (`src/Engine/Strategy.cs`): a play's index is the count at which the player decides, which
   includes the player's cards and the dealer's upcard. So for each count value and each hand, those cards are taken
-  out of the shoe and the rest is estimated by linear regression on the tags, to the composition whose count (with
-  the cards on the table) is that value. The number of unseen cards and their average count in each count bin come
+  out of the shoe and the rest is estimated by linear regression of the rank counts on the tag sum (red and black
+  cards that count differently included), to the composition whose count (with the cards on the table) is that value. The number of unseen cards and their average count in each count bin come
   from the distribution of the count over the shoe. The full analysis of that composition gives the best play at
   that count. For Hi-Lo, 6 decks S17, all 22 I18 + Fab 4 indices are within one point of the published numbers, which
   are for unfloored true counts. The simulator floors (TC 0 means 0 to 0.99), so 16 v T, for example, stands from +1.
@@ -45,9 +46,11 @@ Scenarios save to `.bjev` files (including simulation results); reports export t
   formulas), Kelly/SCORE optimiser.
 
 Validation (`tools/EngineTest.cs`, which exits with code 1 when a check fails): the house edge for 8D, 6D S17 and
-6D H17 (DAS, no surrender) is 0.435%, 0.410% and 0.622%, within 0.03% of published figures (`ca`). For 1 to 8
-decks and the other rule variants, 200 million shuffle-every-round rounds agree with the off-the-top analysis
-within 2 SE (`offtop`).
+6D H17 (DAS, no surrender) is 0.432%, 0.406% and 0.618%, within 0.03% of published figures (`ca`). For 1 to 8
+decks and the other rule variants, single and double deck with resplits and doubling after splits included, 2 billion
+shuffle-every-round rounds per game agree with the off-the-top analysis within 3.5 SE, about 0.009% (`offtop`, about
+3 minutes; in the last run all 11 games were within 0.005%). Random draws of unseen cards agree with the composition
+the index generation uses at a count, for counts with separate red tags too (`regress`).
 
 ## Build
 
@@ -68,7 +71,7 @@ Output: `dist\CalcBJ.exe`. If a copy is running, the build renames it to `CalcBJ
 * Pages use small custom layout containers (`ArrangePanel`, `VStack`, `FieldGrid`, `TileGrid`) that measure every
   control once; nested auto-size TableLayoutPanels made opening the window take ~6 s.
 
-Tests: `tools\EngineTest.cs` (engine checks: `ca` and `offtop` fail with exit code 1, `idx`, `sim`, `misc` print) and `tools\UiTest.cs`
+Tests: `tools\EngineTest.cs` (engine checks: `ca`, `offtop` and `regress` fail with exit code 1, `idx`, `sim`, `misc` print) and `tools\UiTest.cs`
 (drives the real UI in-process; compile with all `src` files and `/main:UiTest`).
 
 ## Web and desktop version

@@ -21,7 +21,8 @@ pub struct CaResult {
     /// Decision flags per cell (see [`crate::strategy`] for the cell layout).
     pub flags: Vec<u8>,
     pub insure: bool,
-    /// Player expectation per initial unit for a round dealt from this composition (negative = house edge).
+    /// Player expectation per initial unit for a round dealt from this composition (negative = house edge). NaN for an
+    /// analysis at a count ([`CountModel`]): its deals are weighted by the shoe, not by the count.
     pub player_ev: f64,
     /// Insurance EV per unit of original bet when the dealer shows an ace.
     pub insurance_ev: f64,
@@ -32,10 +33,13 @@ pub struct CaResult {
 
 /// The unseen cards at a known count, for index plays. The player decides after seeing the upcard and their own two
 /// cards, so the count already includes them: for each deal, the cards left after that upcard and hand are shifted by
-/// linear regression on the tags until the unseen cards' tags add up to `unseen_tags` (C#: CountModel).
+/// the linear regression of the rank counts on the tag sum to the composition expected when the unseen cards' tags add
+/// up to `unseen_tags` (C#: CountModel).
 pub struct CountModel {
     /// `[1..=10]` average tag of each rank.
     pub tags: [f64; 11],
+    /// `[1..=10]` variance of the tags within each rank, where red and black cards count differently; `None` if none do.
+    pub tag_var: Option<[f64; 11]>,
     /// Sum of the tags of the unseen cards.
     pub unseen_tags: f64,
     /// Number of unseen cards.
@@ -43,7 +47,9 @@ pub struct CountModel {
 }
 
 /// The model's unseen cards out of the population left after a deal: q_r = n p_r (1 + (t_r - m) x) with
-/// x = (s/n - m) / V, where p, m and V are the population's rank shares, mean tag and tag variance. Returns their sum.
+/// x = (s/n - m) / V, where p, m and V are the population's rank shares, mean tag and tag variance per card. The
+/// variance includes the spread between a rank's red and black cards: the tag sum also depends on their colours, which
+/// the rank counts don't show. Returns the cards' sum.
 fn regress(popl: &[f64; 11], model: &CountModel, outc: &mut [f64; 11]) -> f64 {
     let (mut m, mut st) = (0.0, 0.0);
     for r in 1..=10 {
@@ -58,7 +64,10 @@ fn regress(popl: &[f64; 11], model: &CountModel, outc: &mut [f64; 11]) -> f64 {
             continue;
         }
         let d = model.tags[r] - mean;
-        v += popl[r] / m * d * d;
+        v += match &model.tag_var {
+            Some(tv) => popl[r] / m * (d * d + tv[r]),
+            None => popl[r] / m * d * d,
+        };
         max_dev = dmax(max_dev, d.abs());
     }
     let mut x = if v > 1e-12 { (model.unseen_tags / n - mean) / v } else { 0.0 };
@@ -86,7 +95,9 @@ fn regress(popl: &[f64; 11], model: &CountModel, outc: &mut [f64; 11]) -> f64 {
     total
 }
 
-const DEALER_CACHE_LIMIT: usize = 1 << 17;
+/// One game (number of decks and soft-17 rule) needs about 26,000 dealer distributions; the limit holds the six games
+/// of a Game page refresh.
+const DEALER_CACHE_LIMIT: usize = 1 << 18;
 
 thread_local! {
     /// Raw dealer distributions keyed by game, upcard and the player's cards (C#: dealerCache). Shared by the engines
@@ -136,9 +147,18 @@ pub struct CaEngine {
     // Exact expectation off the top (see `exact_off_top`).
     xc: [f64; 11],
     hand_memo: HashMap<u64, f64>,
+    split_memo: HashMap<u64, f64>,
     x_up: usize,
     x_game: u64,
     x_takes_all: bool,
+    // The split being worked out: pair rank, resplits so far (pair cards out besides the two dealt), most hands, and
+    // per number of resplits the chance of drawing the pair rank and the values of a hand without and with it.
+    s_rank: usize,
+    s_level: usize,
+    s_max_hands: i32,
+    split_p: [f64; 3],
+    split_x: [f64; 3],
+    split_y: [f64; 3],
 }
 
 /// Full shoe composition: `[0]` unused, `[1..=9]` = 4 per deck, `[10]` = 16 per deck.
@@ -187,9 +207,16 @@ impl CaEngine {
             combos: Vec::with_capacity(600),
             xc: [0.0; 11],
             hand_memo: HashMap::new(),
+            split_memo: HashMap::new(),
             x_up: 1,
             x_game: 0,
             x_takes_all: false,
+            s_rank: 1,
+            s_level: 0,
+            s_max_hands: 2,
+            split_p: [0.0; 3],
+            split_x: [0.0; 3],
+            split_y: [0.0; 3],
         }
     }
 
@@ -569,7 +596,8 @@ impl CaEngine {
             ev_total += (shoe[1] / n) * insurance_ev;
         }
 
-        CaResult { flags, insure, player_ev: ev_total, insurance_ev, cell_ev }
+        let player_ev = if model.is_some() { f64::NAN } else { ev_total };
+        CaResult { flags, insure, player_ev, insurance_ev, cell_ev }
     }
 
     // ---------------- Exact expectation of a strategy off the top ----------------
@@ -624,10 +652,16 @@ impl CaEngine {
         -bet * (1.0 - pb)
     }
 
-    /// Value of a hand of three or more cards, played by the flags as the simulator plays it.
-    fn play(&mut self, flags: &[u8], cards: u64, n: f64, h: usize, ace: bool) -> f64 {
-        let key = cards * 16 + self.x_up as u64;
-        if let Some(&v) = self.hand_memo.get(&key) {
+    /// Value of a hand of three or more cards, played by the flags as the simulator plays it. In a split hand, `cards`
+    /// also holds the cards of the split that are out of the shoe but not in this hand (see `split_exact`).
+    fn play(&mut self, flags: &[u8], cards: u64, n: f64, h: usize, ace: bool, split: bool) -> f64 {
+        let key = if split {
+            ((cards * 16 + self.x_up as u64) * 16 + self.s_rank as u64) * 4 + self.s_level as u64
+        } else {
+            cards * 16 + self.x_up as u64
+        };
+        let memo = if split { &self.split_memo } else { &self.hand_memo };
+        if let Some(&v) = memo.get(&key) {
             return v;
         }
         let soft = ace && h <= 11;
@@ -639,15 +673,20 @@ impl CaEngine {
             if (flags[cell] & flag::STAND) != 0 {
                 self.terminal(cards, n, best, 1.0)
             } else {
-                self.draw(flags, cards, n, h, ace, 1.0)
+                self.draw(flags, cards, n, h, ace, 1.0, split)
             }
         };
-        self.hand_memo.insert(key, v);
+        if split {
+            self.split_memo.insert(key, v);
+        } else {
+            self.hand_memo.insert(key, v);
+        }
         v
     }
 
     /// Takes one card: a hit (bet 1, then plays on) or a double (bet 2, then stands).
-    fn draw(&mut self, flags: &[u8], cards: u64, n: f64, h: usize, ace: bool, bet: f64) -> f64 {
+    #[allow(clippy::too_many_arguments)]
+    fn draw(&mut self, flags: &[u8], cards: u64, n: f64, h: usize, ace: bool, bet: f64, split: bool) -> f64 {
         let mut ev = 0.0;
         for r in 1..=10usize {
             let cr = self.xc[r];
@@ -663,7 +702,7 @@ impl CaEngine {
             } else if bet == 2.0 {
                 self.terminal(with_card(cards, r), n - 1.0, if a2 && h2 <= 11 { h2 + 10 } else { h2 }, 2.0)
             } else {
-                self.play(flags, with_card(cards, r), n - 1.0, h2, a2)
+                self.play(flags, with_card(cards, r), n - 1.0, h2, a2, split)
             };
             ev += pr * v;
             self.xc[r] = cr;
@@ -671,32 +710,118 @@ impl CaEngine {
         ev
     }
 
-    /// Split EV of a pair exactly as `evaluate` works it out (`xc` holds the cards left after the deal).
-    fn split_off_top(&mut self, u: usize, a: usize, np: f64, pbj: f64, peek_cond: bool) -> f64 {
-        self.sp = self.xc;
-        let dbj = self.dealer(u, true, np, peek_cond);
-        self.fill_stand(dbj);
-        for r in 1..=10 {
-            self.p[r] = self.sp[r] / np;
+    /// A split hand of the pair card `a` and its second card `r` (already out of `xc` and in `cards`), played as the
+    /// simulator plays it: split aces get one card unless they may be hit, and doubling needs DAS and isn't allowed on
+    /// split aces.
+    fn split_hand(&mut self, flags: &[u8], cards: u64, n: f64, a: usize, r: usize) -> f64 {
+        let h = a + r;
+        let ace = a == 1 || r == 1;
+        let soft = ace && h <= 11;
+        let best = if soft { h + 10 } else { h };
+        if a == 1 && !self.r.hit_split_aces {
+            return self.terminal(cards, n, best, 1.0);
         }
-        self.fill_dp();
-        let mut ev_p = self.split_ev(a);
-        if peek_cond && pbj > 0.0 {
-            ev_p = -pbj + (1.0 - pbj) * ev_p;
+        if best == 21 {
+            return self.terminal(cards, n, 21, 1.0);
         }
-        ev_p
+        let f = flags[if soft { soft_cell(best, self.x_up) } else { hard_cell(h, self.x_up) }];
+        if (f & flag::DOUBLE) != 0 && self.r.das && a != 1 && self.r.can_double_total(h as i32, soft) {
+            return self.draw(flags, cards, n, h, ace, 2.0, true);
+        }
+        if (f & flag::STAND) != 0 {
+            return self.terminal(cards, n, best, 1.0);
+        }
+        self.draw(flags, cards, n, h, ace, 1.0, true)
+    }
+
+    /// Total value of the split hands still to come: `pending` hands waiting for their second card, of `hands` in all.
+    fn split_dp(&self, pending: i32, hands: i32) -> f64 {
+        if pending == 0 {
+            return 0.0;
+        }
+        let j = (hands - 2) as usize;
+        let pp = self.split_p[j];
+        let mut v = (1.0 - pp) * (self.split_x[j] + self.split_dp(pending - 1, hands));
+        if hands < self.s_max_hands {
+            v += pp * self.split_dp(pending + 1, hands + 1);
+        } else {
+            v += pp * (self.split_y[j] + self.split_dp(pending - 1, hands));
+        }
+        v
+    }
+
+    /// Expectation of splitting a pair of `a`, played as the simulator plays it (`xc` holds the cards left after the
+    /// deal). Every split hand is played exactly with its own cards, the pair cards and the pair cards of earlier
+    /// resplits out of the shoe. The cards of the other split hands stay in: in shuffle-every-round simulations of 1 to
+    /// 8 decks that makes no measurable difference (0.002% or less), where the analysis's fixed draw odds were up to
+    /// 0.02% too low with one deck.
+    fn split_exact(&mut self, flags: &[u8], a: usize, np: f64, pbj: f64, peek_cond: bool) -> f64 {
+        let mut max_hands = self.r.max_split_hands.min(4);
+        if a == 1 && !self.r.resplit_aces {
+            max_hands = 2;
+        }
+        self.s_rank = a;
+        self.s_max_hands = max_hands;
+        let mut cards = with_card(with_card(0, a), a);
+        let mut n = np;
+        let mut taken = 0.0;
+        for j in 0..=(max_hands - 2) as usize {
+            if j > 0 {
+                // Every resplit puts one more pair card on the table.
+                if self.xc[a] < 1.0 {
+                    // No pair card left to resplit with: this many resplits can't happen.
+                    self.split_p[j] = 0.0;
+                    self.split_x[j] = 0.0;
+                    self.split_y[j] = 0.0;
+                    continue;
+                }
+                self.xc[a] -= 1.0;
+                cards = with_card(cards, a);
+                n -= 1.0;
+                taken += 1.0;
+            }
+            self.s_level = j;
+            let na = self.xc[a];
+            let pp = na / n;
+            let mut sum = 0.0;
+            for r in 1..=10usize {
+                let cr = self.xc[r];
+                if r == a || cr <= 0.0 {
+                    continue;
+                }
+                self.xc[r] = cr - 1.0;
+                sum += cr / n * self.split_hand(flags, with_card(cards, r), n - 1.0, a, r);
+                self.xc[r] = cr;
+            }
+            self.split_p[j] = pp;
+            self.split_x[j] = if pp < 1.0 { sum / (1.0 - pp) } else { 0.0 };
+            self.split_y[j] = 0.0;
+            if j == (max_hands - 2) as usize && na > 0.0 {
+                // At the most hands a further pair card is played as it is.
+                self.xc[a] = na - 1.0;
+                self.split_y[j] = self.split_hand(flags, with_card(cards, a), n - 1.0, a, a);
+                self.xc[a] = na;
+            }
+        }
+        self.xc[a] += taken;
+        let mut ev = self.split_dp(2, 2);
+        if peek_cond {
+            ev -= pbj;
+        }
+        ev
     }
 
     /// Off-the-top expectation of the strategy in `basic` (its flags and insurance) with every card the player draws
-    /// taken out of the shoe: hits and doubles follow the flags exactly as the simulator plays them. `evaluate`'s
-    /// `player_ev` assumes the best play after each hit, with the draw odds fixed after the first three cards, which is
-    /// up to 0.04% too high with one deck. Splits keep `evaluate`'s approximation. In peek games each deal loses its
-    /// blackjack probability once and the dealer's blackjacks are left out of every later outcome, which is exact
+    /// taken out of the shoe: hits, doubles and split hands follow the flags exactly as the simulator plays them
+    /// (splits as in `split_exact`). `evaluate`'s `player_ev` assumes the best play after each hit, with the draw odds
+    /// fixed after the first three cards, which is up to 0.04% too high with one deck. In peek games each deal loses
+    /// its blackjack probability once and the dealer's blackjacks are left out of every later outcome, which is exact
     /// because the order of the unseen cards doesn't matter.
     pub fn exact_off_top(&mut self, basic: &CaResult) -> f64 {
         let shoe = full_shoe(self.r.decks as f64);
         self.x_game = (self.r.decks * 2 + if self.r.h17 { 1 } else { 0 }) as u64;
         self.hand_memo.clear();
+        self.split_memo.clear();
         self.x_takes_all = self.r.dealer_bj_takes_all();
         let surr_allowed = self.r.surrender != SurrenderRule::None;
         let sr_before_peek = self.r.surrender_before_peek();
@@ -748,17 +873,17 @@ impl CaEngine {
                     let ev = if surr_allowed && (pf & flag::SURRENDER) != 0 {
                         ev_r
                     } else if (pf & flag::SPLIT) != 0 {
-                        self.split_off_top(u, a, np, pbj, peek_cond)
+                        self.split_exact(flags, a, np, pbj, peek_cond)
                     } else if surr_allowed && (tf & flag::SURRENDER) != 0 {
                         ev_r
                     } else {
                         let cards = with_card(with_card(0, a), b);
                         let mut v = if (tf & flag::DOUBLE) != 0 && self.r.can_double_total(h0 as i32, soft0) {
-                            self.draw(flags, cards, np, h0, ace0, 2.0)
+                            self.draw(flags, cards, np, h0, ace0, 2.0, false)
                         } else if (tf & flag::STAND) != 0 {
                             self.terminal(cards, np, if soft0 { h0 + 10 } else { h0 }, 1.0)
                         } else {
-                            self.draw(flags, cards, np, h0, ace0, 1.0)
+                            self.draw(flags, cards, np, h0, ace0, 1.0, false)
                         };
                         if peek_cond {
                             v -= pbj;
