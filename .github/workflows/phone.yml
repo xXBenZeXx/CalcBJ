@@ -315,12 +315,14 @@ jobs:
       - name: Test the app on an Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          # Android 16 with Google APIs. Not Android 17 (API 37, which the app targets): on GitHub's runners that image
-          # restarts its system server soon after booting (its emulated graphics abort, as other projects found), and
-          # in the first run here the package service went away under the install. The WebView's version is in the
+          # Android 16. Not Android 17 (API 37, which the app targets): on GitHub's runners that image restarts its
+          # system server soon after booting (its emulated graphics abort, as other projects found), and in the first
+          # run here the package service went away under the install. And the plain image without Google's apps
+          # ("default"): with them, the 2 cores were swamped for a minute after booting, the system UI stopped
+          # answering and restarted, and its lock screen hid the app (fourth run). The WebView's version is in the
           # test's summary.
           api-level: 36
-          target: google_apis
+          target: default
           arch: x86_64
           profile: pixel_7
           ram-size: 3072M

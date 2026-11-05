@@ -150,18 +150,23 @@ apps):
      from the secrets and checks it: 16 KB alignment (zipalign, and every native library's LOAD segments), arm64-v8a
      code only, package name, versionCode and versionName (aapt2). Without the secrets it stays unsigned, with a
      warning.
-2. **Emulator test**: Android 16 (API 36, Google APIs, x86_64) with KVM, where `scripts/android-smoke.mjs` installs the
-   debug APK and drives the app through adb and the WebView's DevTools protocol. (Not Android 17: on GitHub's runners
-   its emulator image restarts its system server soon after booting.) The test waits until the package service answers
-   several times in a row before it installs, and tries the install up to three times. Must pass: no errors at startup;
-   a house edge on Game rules (the engine works); the phone layout (bottom tabs, no "F5"); all nine pages open; a
-   10M-round simulation finishes and shows results; back closes the More sheet, then returns to Game rules, then leaves
-   the app; settings and results survive force-stop and restart; a run interrupted by Home and force-stop keeps a
-   checkpoint in `calcbj.sims.v1`; no crash. Best effort (warnings only): the safe areas clear the system bars, a text
-   field near the bottom stays visible above the keyboard, Save scenario writes `scenario.bjev` to Downloads through the
-   system's screen and Open scenario reads it back, no page errors after startup. Screenshots, logcat, screen dumps,
-   `results.json` and `summary.md` are in the `android-smoke-test` artifact; the summary (with the WebView version) is
-   also on the run's page.
+2. **Emulator test**: Android 16 (API 36, the plain image without Google's apps, x86_64) with KVM, where
+   `scripts/android-smoke.mjs` installs the debug APK and drives the app through adb and the WebView's DevTools
+   protocol. GitHub's runner has 2 cores, which a freshly booted emulator swamps for a while: Android 17's image
+   restarts its system server there, and with Google's apps the system UI stopped answering and its lock screen hid the
+   app. So the test turns the lock screen off, waits until the status bar is up and the cores are mostly idle, waits for
+   the package service before it installs (up to three attempts), simulates on one thread on 2 cores, and brings the app
+   back should anything cover it; checks that wait in vain report what the system was doing, and the job's log ends with
+   the ANRs, crashes and killed processes from logcat. The back checks use real taps (adb input tap): Chromium's back
+   button skips the history entries a page added without a user activation, and a click through the DevTools protocol
+   does not count as one. Must pass: no errors at startup; a house edge on Game rules (the engine works); the phone
+   layout (bottom tabs, no "F5"); all nine pages open; a 10M-round simulation finishes and shows results; back closes
+   the More sheet, then returns to Game rules, then leaves the app; settings and results survive force-stop and restart;
+   a run interrupted by Home and force-stop keeps a checkpoint in `calcbj.sims.v1`; no crash. Best effort (warnings
+   only): the safe areas clear the system bars, a text field near the bottom stays visible above the keyboard, Save
+   scenario writes `scenario.bjev` to Downloads through the system's screen and Open scenario reads it back, no page
+   errors after startup. Screenshots, logcat, screen dumps, `results.json` and `summary.md` are in the
+   `android-smoke-test` artifact; the summary (with the WebView version) is also on the run's page.
 3. **Release**, after the desktop workflow on `main`: the signed APK is attached to the release `v<version>`.
 4. **iPhone**, only by hand and not tested yet: `tauri ios init`, the icons, then an unsigned IPA (artifact) or a
    TestFlight upload.

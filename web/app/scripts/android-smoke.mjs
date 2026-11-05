@@ -251,6 +251,38 @@ async function waitForPackageService(seconds = 300) {
   });
 }
 
+/** The device's CPU time so far, all cores together, idle and in total (from /proc/stat); null if it can't be read. */
+function cpuTimes() {
+  const fields = shell("head -n 1 /proc/stat", { check: false }).split(/\s+/);
+  const n = fields.slice(1).map(Number);
+  if (fields[0] !== "cpu" || n.length < 5 || n.some((v) => !Number.isFinite(v))) return null;
+  // idle and iowait
+  return { idle: n[3] + n[4], total: n.reduce((a, b) => a + b, 0) };
+}
+
+/**
+ * Waits until the device has settled after booting: the status bar is on screen (the system UI runs) and the cores
+ * have been at least 60% idle for 15 s. Right after booting, an emulator on 2 cores is busy for a minute or more, and
+ * in the fourth CI run its system UI stopped answering and was restarted meanwhile, which hid the app. Gives up after
+ * `seconds` and says so; the test then carries on.
+ */
+async function waitForCalm(seconds = 240) {
+  const start = Date.now();
+  let previous = cpuTimes();
+  let calm = 0;
+  let idle = null;
+  const load = () => (idle === null ? "CPU load unknown" : `${Math.round(idle * 100)}% idle`);
+  while (Date.now() - start < seconds * 1000) {
+    await sleep(5000);
+    const now = cpuTimes();
+    idle = previous && now && now.total > previous.total ? (now.idle - previous.idle) / (now.total - previous.total) : null;
+    previous = now;
+    calm = systemInsets().statusBars && (idle === null || idle >= 0.6) ? calm + 1 : 0;
+    if (calm >= 3) return `settled after ${Math.round((Date.now() - start) / 1000)} s (${load()})`;
+  }
+  return `still busy after ${seconds} s (${load()}), testing anyway`;
+}
+
 /** Installs the APK once the package service is there; tries again (copying the APK first) when that fails. */
 async function installApk(apk) {
   let last = null;
@@ -838,6 +870,18 @@ async function main() {
     await app.launch();
   };
 
+  /**
+   * Brings the app's page back on screen when something covered it (a lock screen, a window of the system), which
+   * also pauses a simulation of the phone app. Returns whether it had to.
+   */
+  const ensureVisible = async () => {
+    if ((await app.page("visibility")) === "visible") return false;
+    shell("wm dismiss-keyguard", { check: false });
+    shell(`am start -n ${ACTIVITY}`, { check: false });
+    await waitFor("the app's page back on screen", 20, async () => (await app.page("visibility")) === "visible");
+    return true;
+  };
+
   try {
     const connected = await check("A device is connected", true, async () => {
       adb(["wait-for-device"], { timeout: 300_000 });
@@ -846,6 +890,8 @@ async function main() {
       shell("settings put system screen_off_timeout 1800000", { check: false });
       shell("settings put global hide_error_dialogs 1", { check: false });
       shell("wm dismiss-keyguard", { check: false });
+      // No lock screen at all: Android shows it again whenever the system UI restarts, and the app behind it is hidden.
+      shell("locksettings set-disabled true", { check: false });
       adb(["logcat", "-G", "16M"], { check: false });
       adb(["logcat", "-c"], { check: false });
       const prop = (name) => shell(`getprop ${name}`, { check: false });
@@ -857,7 +903,8 @@ async function main() {
         density: /(\d+)\s*$/.exec(shell("wm density", { check: false }))?.[1],
         webviewPackage: /\(name, version\): \((.+)\)/.exec(shell("dumpsys webviewupdate", { check: false }))?.[1],
       });
-      return `Android ${device.android} (API ${device.sdk}), ${device.model}, WebView package ${device.webviewPackage ?? "?"}`;
+      const settled = await waitForCalm();
+      return `Android ${device.android} (API ${device.sdk}), ${device.model}, WebView package ${device.webviewPackage ?? "?"}; ${settled}`;
     });
     if (!connected) blocked = "no device";
 
@@ -964,11 +1011,16 @@ async function main() {
         await app.page("setThreads", 1);
         await waitFor("saved thread setting of 1", 10, async () => (await app.storage()).settings?.threads === 1);
       }
+      await ensureVisible();
       await app.page("clickRun");
       await waitFor("running simulation", 20, () => app.page("running"));
+      // Should something cover the app anyway, it is brought back, and the paused run goes on.
+      let broughtBack = 0;
       const stored = await waitFor("10M simulated rounds in calcbj.sims.v1", 300, async () => {
         const s = await app.storage();
-        return mostRounds(s) >= 10e6 ? s : null;
+        if (mostRounds(s) >= 10e6) return s;
+        if (await ensureVisible()) broughtBack++;
+        return null;
       }).catch(async (e) => {
         throw new Error(`${e.message}; ${await situation()}`);
       });
@@ -980,15 +1032,18 @@ async function main() {
       facts.rounds = run.rounds;
       const memory = /TOTAL PSS:\s+(\d+)/.exec(shell(`dumpsys meminfo ${PACKAGE}`, { check: false }))?.[1];
       const speed = run.seconds > 0 ? ` (${(run.rounds / run.seconds / 1e6).toFixed(1)}M rounds/s)` : "";
+      const covered = broughtBack ? `; the app was covered and brought back ${broughtBack} time(s)` : "";
       return (
         `${roundsText(run.rounds)} rounds in ${run.seconds?.toFixed(1)} s on ${run.threads} thread(s)${speed}; ` +
-        `the page shows ${shown.rounds} rounds simulated${memory ? `; the app uses ${Math.round(memory / 1024)} MB (PSS)` : ""}`
+        `the page shows ${shown.rounds} rounds simulated${memory ? `; the app uses ${Math.round(memory / 1024)} MB (PSS)` : ""}` +
+        covered
       );
     });
 
     // The back checks open the sheet and the pages with real taps (see tapButton).
     await check("Back closes the More sheet", true, async () => {
       await ensureApp();
+      await ensureVisible();
       const title = await app.page("title");
       await tapButton("More");
       await waitFor("More sheet", 10, () => app.page("moreOpen")).catch(async (e) => {
@@ -1007,10 +1062,14 @@ async function main() {
 
     await check("Back from another page returns to Game rules", true, async () => {
       await ensureApp();
-      if ((await app.page("title")).endsWith("Game rules")) {
-        await tapButton("Simulate");
-        await app.waitForTitle("Simulation");
+      await ensureVisible();
+      // The page's entry comes from a real tap: to Game rules first if need be, then a tap on Simulate.
+      if (!(await app.page("title")).endsWith("Game rules")) {
+        await tapButton("Rules");
+        await app.waitForTitle("Game rules");
       }
+      await tapButton("Simulate");
+      await app.waitForTitle("Simulation");
       const from = await app.page("title");
       const before = await app.page("history");
       key(KEY_BACK);
@@ -1022,6 +1081,7 @@ async function main() {
 
     await check("Back on Game rules leaves the app", true, async () => {
       await ensureApp();
+      await ensureVisible();
       if (!(await app.page("title")).endsWith("Game rules")) {
         await tapButton("Rules");
         await app.waitForTitle("Game rules");
@@ -1052,6 +1112,7 @@ async function main() {
     await check("A run interrupted by Home and force-stop keeps a checkpoint", true, async () => {
       // Far more than the emulator can do before the home key.
       await setRounds(2e9);
+      await ensureVisible();
       const before = mostRounds(await app.storage());
       await app.page("clickRun");
       await waitFor("running simulation", 20, () => app.page("running"));
@@ -1083,6 +1144,8 @@ async function main() {
     });
 
     await check("The keyboard leaves a text field near the bottom visible", false, async () => {
+      await ensureApp();
+      await ensureVisible();
       await app.open("Results", "Bet ramp & results");
       const target = await app.page("keyboardTarget");
       await sleep(500);
@@ -1116,7 +1179,9 @@ async function main() {
 
     await check("Save scenario writes scenario.bjev to Downloads", false, async () => {
       try {
+        await ensureApp();
         await setRounds(10e6);
+        await ensureVisible();
         await openFileScreen("Save scenario…", "system Save screen");
         screenshot("save-picker");
         await pickerShow("Downloads");
@@ -1154,7 +1219,9 @@ async function main() {
       if (!facts.savedFile) throw new Error("no saved scenario to open (the save check did not pass)");
       try {
         // Another value first, so that opening the file visibly brings its own back.
+        await ensureApp();
         await setRounds(25e6);
+        await ensureVisible();
         await openFileScreen("Open scenario…", "system file picker");
         screenshot("open-picker");
         await pickerShow("Downloads");
