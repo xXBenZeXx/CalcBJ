@@ -131,6 +131,15 @@ export function logcatProblems(text) {
   return { consoleErrors, crashes };
 }
 
+/**
+ * What went wrong outside the app, from logcat: an app or the system UI not responding or crashing, and processes that
+ * died or were killed. On a slow emulator these explain a stalled check (the app pauses while something covers it).
+ */
+export function systemTrouble(text) {
+  const trouble = /ANR in |am_anr|Application Not Responding|FATAL EXCEPTION|am_crash|has died|lowmemorykiller|am_kill|Force finishing/;
+  return text.split(/\r?\n/).filter((line) => trouble.test(line)).map((line) => line.replace(/\s+/g, " ").trim());
+}
+
 /** 10M, 2B: round counts as the app shows them. */
 export function roundsText(n) {
   if (!Number.isFinite(n)) return String(n);
@@ -454,6 +463,20 @@ export function pageAction(action, ...args) {
       return select.value;
     },
     roundsValue: () => roundsSelect()?.value ?? null,
+    /** Types `n` into the Simulation page's "CPU threads" field and leaves it, which is when the field commits. */
+    setThreads(n) {
+      const field = [...document.querySelectorAll("label")].find(
+        (l) => (l.querySelector(".label")?.textContent ?? "").trim() === "CPU threads",
+      );
+      const input = field?.querySelector("input");
+      if (!input) throw new Error("no CPU threads field on this page");
+      input.value = String(n);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return input.value;
+    },
+    /** Whether the page counts as on screen: a phone app pauses its simulation while it does not. */
+    visibility: () => document.visibilityState,
     /** The Simulation page's results: the "Rounds simulated" figure, and whether it says there are none. */
     results: () => ({
       // innerText follows CSS text-transform, and the tile titles are in capitals: these ignore case.
@@ -786,6 +809,21 @@ async function main() {
     tap(x, y);
   };
 
+  /** For a check that waited in vain: what the screen, the page and the system were doing. */
+  const situation = async () => {
+    const parts = [`focus: ${focused() ?? "?"}`];
+    try {
+      parts.push(`page ${await app.page("visibility")}`);
+      const progress = await app.page("progress");
+      if (progress !== null) parts.push(`${progress}% done`);
+    } catch (e) {
+      parts.push(`page unreachable (${e.message})`);
+    }
+    const trouble = systemTrouble(String(adb(["logcat", "-d", "-b", "main,system,events,crash"], { check: false })));
+    parts.push(trouble.length ? `system: ${trouble.slice(-4).join(" / ")}` : "nothing wrong in logcat");
+    return parts.join("; ");
+  };
+
   /** After a check that may have left the app: brings it back to the front and reconnects to its page. */
   const ensureApp = async () => {
     if (focused() === PACKAGE && app.devtools) {
@@ -829,6 +867,7 @@ async function main() {
       shell(`pm clear ${PACKAGE}`);
       const seconds = await app.launch();
       const info = await app.page("info");
+      facts.cores = info.cores;
       device.webview = chromeVersion(info.userAgent) ?? info.userAgent;
       device.ready = `${seconds.toFixed(1)} s after launch`;
       screenshot("start");
@@ -919,11 +958,19 @@ async function main() {
 
     await check("A short simulation (10M rounds) finishes and shows results", true, async () => {
       await setRounds(10e6);
+      // GitHub's emulator has 2 cores and draws in software on the same 2 of the runner: with both simulating, the
+      // system starved, something stopped answering and covered the app, and the app paused its run (third CI run).
+      if (facts.cores <= 2) {
+        await app.page("setThreads", 1);
+        await waitFor("saved thread setting of 1", 10, async () => (await app.storage()).settings?.threads === 1);
+      }
       await app.page("clickRun");
       await waitFor("running simulation", 20, () => app.page("running"));
       const stored = await waitFor("10M simulated rounds in calcbj.sims.v1", 300, async () => {
         const s = await app.storage();
         return mostRounds(s) >= 10e6 ? s : null;
+      }).catch(async (e) => {
+        throw new Error(`${e.message}; ${await situation()}`);
       });
       await waitFor("end of the run", 30, async () => !(await app.page("running")));
       const shown = await app.page("results");
@@ -944,7 +991,9 @@ async function main() {
       await ensureApp();
       const title = await app.page("title");
       await tapButton("More");
-      await waitFor("More sheet", 10, () => app.page("moreOpen"));
+      await waitFor("More sheet", 10, () => app.page("moreOpen")).catch(async (e) => {
+        throw new Error(`${e.message} after a tap on More; ${await situation()}`);
+      });
       const before = await app.page("history");
       screenshot("more-sheet");
       key(KEY_BACK);
@@ -1138,6 +1187,10 @@ async function main() {
       logcatText = String(adb(["logcat", "-d", "-v", "threadtime"], { check: false }));
       writeFileSync(join(out, "logcat.txt"), logcatText);
       frozen = notRespondingApp(windowFocus()) === PACKAGE;
+      // Into the job's log too, so that a stalled check can be explained without the artifact.
+      const events = String(adb(["logcat", "-d", "-b", "events"], { check: false }));
+      const trouble = systemTrouble(`${logcatText}\n${events}`);
+      if (trouble.length) log(`\nProblems outside the app in logcat:\n${trouble.slice(-30).map((l) => `  ${l}`).join("\n")}`);
     } catch (e) {
       log(`(no logcat: ${e.message})`);
     }
