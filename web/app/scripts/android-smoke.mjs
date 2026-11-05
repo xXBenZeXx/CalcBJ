@@ -407,6 +407,15 @@ export function pageAction(action, ...args) {
       if (!button) throw new Error(`no "${label}" button; there are: ${buttons().map(words).join(" | ")}`);
       return press(button);
     },
+    /** Where a button is, found as `click` finds it, in CSS pixels: for a real tap through adb. */
+    buttonRect(label) {
+      const found = buttons().filter((b) => words(b) === label && !b.disabled);
+      const button = found.find(inHeader) ?? found[0];
+      if (!button) throw new Error(`no "${label}" button; there are: ${buttons().map(words).join(" | ")}`);
+      return { rect: rect(button), dpr: devicePixelRatio };
+    },
+    /** The page's place in the WebView's history, for the back checks' reports. */
+    history: () => `${history.length} entries, this one ${JSON.stringify(history.state)}`,
     /** The top bar's Run button: "Run simulation", or "Add 10M rounds" once there are results. */
     clickRun() {
       const isRun = (b) => words(b).includes("Run simulation") || /^Add .* rounds$/.test(words(b));
@@ -758,6 +767,39 @@ async function main() {
     return app.launch();
   };
 
+  /** The WebView's top left corner on the screen, to turn the page's CSS pixels into screen pixels for a tap. */
+  const webViewOrigin = async () => {
+    const view = (await screenDump("webview")).find((n) => n.className === "android.webkit.WebView" && n.bounds)?.bounds;
+    return { left: view?.left ?? 0, top: view?.top ?? 0 };
+  };
+
+  /**
+   * Taps one of the page's buttons with a real touch, as a user does. The back checks need that: Chromium's back
+   * button skips every history entry of a page that added one without a user activation, and a click through the
+   * DevTools protocol did not count as one in the first emulator runs (back then left the app at once).
+   */
+  const tapButton = async (label) => {
+    const target = await app.page("buttonRect", label);
+    const origin = await webViewOrigin();
+    const x = origin.left + ((target.rect.left + target.rect.right) / 2) * target.dpr;
+    const y = origin.top + ((target.rect.top + target.rect.bottom) / 2) * target.dpr;
+    tap(x, y);
+  };
+
+  /** After a check that may have left the app: brings it back to the front and reconnects to its page. */
+  const ensureApp = async () => {
+    if (focused() === PACKAGE && app.devtools) {
+      try {
+        await app.page("title");
+        return;
+      } catch {
+        // The page is gone (the app was closed and started again): connect anew below.
+      }
+    }
+    app.close();
+    await app.launch();
+  };
+
   try {
     const connected = await check("A device is connected", true, async () => {
       adb(["wait-for-device"], { timeout: 300_000 });
@@ -897,32 +939,44 @@ async function main() {
       );
     });
 
+    // The back checks open the sheet and the pages with real taps (see tapButton).
     await check("Back closes the More sheet", true, async () => {
+      await ensureApp();
       const title = await app.page("title");
-      await app.openMore();
+      await tapButton("More");
+      await waitFor("More sheet", 10, () => app.page("moreOpen"));
+      const before = await app.page("history");
       screenshot("more-sheet");
       key(KEY_BACK);
       await sleep(1500);
-      if (focused() !== PACKAGE) throw new Error(`the app left the screen (${focused()} has the focus)`);
+      if (focused() !== PACKAGE) throw new Error(`the app left the screen (${focused()} has the focus); history before: ${before}`);
       await waitFor("closed More sheet", 10, async () => !(await app.page("moreOpen")));
       const now = await app.page("title");
       if (now !== title) throw new Error(`the page changed from "${title}" to "${now}"`);
-      return `the sheet closed and "${title}" stayed`;
+      return `the sheet closed and "${title}" stayed (history before: ${before})`;
     });
 
     await check("Back from another page returns to Game rules", true, async () => {
-      if ((await app.page("title")).endsWith("Game rules")) await app.open("Simulate", "Simulation");
+      await ensureApp();
+      if ((await app.page("title")).endsWith("Game rules")) {
+        await tapButton("Simulate");
+        await app.waitForTitle("Simulation");
+      }
       const from = await app.page("title");
+      const before = await app.page("history");
       key(KEY_BACK);
       await sleep(1500);
-      if (focused() !== PACKAGE) throw new Error(`the app left the screen (${focused()} has the focus)`);
+      if (focused() !== PACKAGE) throw new Error(`the app left the screen (${focused()} has the focus); history before: ${before}`);
       await app.waitForTitle("Game rules", 10);
-      return `"${from}" → Game rules`;
+      return `"${from}" → Game rules (history before: ${before})`;
     });
 
     await check("Back on Game rules leaves the app", true, async () => {
-      const title = await app.page("title");
-      if (!title.endsWith("Game rules")) throw new Error(`not on Game rules but on "${title}"`);
+      await ensureApp();
+      if (!(await app.page("title")).endsWith("Game rules")) {
+        await tapButton("Rules");
+        await app.waitForTitle("Game rules");
+      }
       key(KEY_BACK);
       const other = await waitForOtherApp("other app on screen");
       screenshot("left-the-app");
