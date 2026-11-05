@@ -35,6 +35,8 @@ export class EngineInstance {
     const ex = this.ex;
     const bytes = encoder.encode(JSON.stringify(request));
     const ptr = ex.alloc(bytes.length) >>> 0;
+    // No memory left for the request (a phone short of memory): writing it to address 0 would corrupt the engine.
+    if (ptr === 0) throw new Error("The engine ran out of memory.");
     new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes);
     let len: number;
     try {

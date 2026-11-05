@@ -8,6 +8,7 @@
   import { engine } from "../lib/engine/engine";
   import { countLabel, grouped, money, money0, pct, signedPct } from "../lib/format";
   import { app } from "../lib/state.svelte";
+  import { keyHint } from "../lib/text";
 
   let hours = $state(100);
 
@@ -43,7 +44,7 @@
   });
 
   let banner = $derived.by((): { text: string; tone: "info" | "warn" } | null => {
-    if (!app.sim) return { text: "No simulation yet — press Run simulation (F5).", tone: "info" };
+    if (!app.sim) return { text: `No simulation yet — press Run simulation${keyHint("F5")}.`, tone: "info" };
     if (!a) return { text: "The current ramp never bets.", tone: "info" };
     if (app.simStale)
       return { text: "⚠  Settings changed since the last simulation; charts show the previous settings.", tone: "warn" };

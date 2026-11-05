@@ -1,5 +1,7 @@
 <script lang="ts">
   import Card from "../lib/components/Card.svelte";
+  import { touchScreen } from "../lib/platform";
+  import { keyHint } from "../lib/text";
 </script>
 
 <div class="cols">
@@ -15,8 +17,13 @@
           use. Indices are generated for your exact count and rules; you can override any of them with your own numbers.
         </li>
         <li>
-          <b>Simulation</b> — press Run (F5). Each round is dealt from a real shoe to every spot; your seat's results are
-          stored for every count value. Simulations only run when you press Run, on every CPU thread of this device.
+          <b>Simulation</b> — press {touchScreen ? "Run simulation" : "Run (F5)"}. Each round is dealt from a real shoe to
+          every spot; your seat's results are stored for every count value. Simulations only run when you press Run,
+          {__MOBILE__ ? "on the number of CPU threads set on that page." : "on every CPU thread of this device."}
+          {#if __MOBILE__}
+            A run pauses while CalcBJ is in the background and carries on when you come back; if the app is closed in
+            between, the rounds simulated so far are kept.
+          {/if}
         </li>
         <li>
           <b>Bet ramp &amp; results</b> — change units and hands per count and everything updates instantly, without
@@ -24,7 +31,8 @@
         </li>
         <li>
           <b>Bankroll &amp; risk, Charts, Sensitivity sweep, Compare</b> — risk of ruin, trip outcomes, how results change with
-          one parameter, and side-by-side comparisons. Save scenarios (Ctrl+S): the files open in the Windows app too.
+          one parameter, and side-by-side comparisons. Save scenarios{keyHint("Ctrl+S")}: the files open in the Windows app
+          too.
         </li>
       </ol>
     </Card>
@@ -58,6 +66,22 @@
         <p>
           CalcBJ runs entirely on this computer and needs no internet connection; nothing is sent anywhere. Settings and
           results are kept between sessions. To move them to another computer, save a scenario file and open it there.
+        </p>
+      </Card>
+    {:else if __MOBILE__}
+      <Card title="Offline use">
+        <p>
+          CalcBJ runs entirely on this device and needs no internet connection; nothing is sent anywhere. Settings and
+          results stay in the app between sessions.
+        </p>
+        <p>
+          To move them to another device, save a scenario file and open it there.
+          {#if __IOS__}
+            Saved files are in the Files app under On My iPhone › CalcBJ (On My iPad on an iPad).
+          {:else}
+            When you save, you choose the folder and the file name.
+          {/if}
+          The files also open in the Windows app and in the desktop app for Windows and Mac.
         </p>
       </Card>
     {:else}
@@ -109,9 +133,11 @@
       </dl>
     </Card>
 
-    <Card title="Shortcuts">
-      <p>F5 run simulation · Esc stop · Ctrl+S save scenario · Ctrl+O open scenario</p>
-    </Card>
+    {#if !touchScreen}
+      <Card title="Shortcuts">
+        <p>F5 run simulation · Esc stop · Ctrl+S save scenario · Ctrl+O open scenario</p>
+      </Card>
+    {/if}
   </div>
 </div>
 

@@ -95,9 +95,12 @@ fn regress(popl: &[f64; 11], model: &CountModel, outc: &mut [f64; 11]) -> f64 {
     total
 }
 
-/// One game (number of decks and soft-17 rule) needs about 26,000 dealer distributions; the limit holds the six games
-/// of a Game page refresh.
-const DEALER_CACHE_LIMIT: usize = 1 << 18;
+/// How many dealer distributions the memo holds before it is cleared. One game (number of decks and soft-17 rule)
+/// needs about 26,000, so this holds the six games of a Game page refresh several times over. It is 229,376, 7/8 of
+/// 2^18, because that is what a hash table of 2^18 buckets (16 MiB) holds: one entry more and it moves to 2^19 buckets
+/// (32 MiB) while the old table still exists, a 67 MiB peak in the WebAssembly memory, which never shrinks again (too
+/// much on a phone). The C# engine keeps 2^18 entries; the limit only decides when the memo is cleared, never a result.
+const DEALER_CACHE_LIMIT: usize = (1 << 18) / 8 * 7;
 
 thread_local! {
     /// Raw dealer distributions keyed by game, upcard and the player's cards (C#: dealerCache). Shared by the engines
@@ -898,5 +901,26 @@ impl CaEngine {
             ev_total += (shoe[1] / n) * basic.insurance_ev;
         }
         ev_total
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A long session of games: the dealer memo is cleared on the way but never outgrows a table of 2^18 buckets, and
+    /// a game worked out again after a clear gives the same result to the last bit.
+    #[test]
+    fn dealer_cache_stays_in_one_table() {
+        let first = house_edge_off_top(&Rules::default());
+        for decks in 1..=8 {
+            for h17 in [false, true] {
+                house_edge_off_top(&Rules { decks, h17, ..Rules::default() });
+                let (len, capacity) = DEALER_CACHE.with_borrow(|c| (c.len(), c.capacity()));
+                assert!(len <= DEALER_CACHE_LIMIT, "{decks} decks: {len} entries");
+                assert!(capacity <= DEALER_CACHE_LIMIT, "{decks} decks: the table grew to {capacity} entries");
+            }
+        }
+        assert_eq!(house_edge_off_top(&Rules::default()).to_bits(), first.to_bits());
     }
 }

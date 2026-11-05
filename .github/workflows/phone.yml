@@ -1,0 +1,551 @@
+# Builds the phone apps (Tauri 2 mobile, from the same web/app/src-tauri project as the desktop apps) on GitHub's
+# machines. README.md (Phone apps) explains installing, updating and the signing key.
+#
+# Android:
+#   - On every push to a branch other than main that changes web/: an APK is built and tested on an emulator
+#     (web/app/scripts/android-smoke.mjs). Nothing is released.
+#   - After every successful "Desktop apps" run on main: the same for the commit that run built, and then the signed
+#     APK is attached to that run's release v<version>. The desktop workflow creates the release; this one never does.
+#   - By hand: Actions -> Phone apps -> Run workflow (on main, the signed APK is attached to the release as well).
+# iPhone: only by hand, and prepared but NOT TESTED YET: an unsigned IPA for sideloading, or an upload to TestFlight.
+# Mac runners cost about ten times as much as Linux ones, which is why the iPhone job never runs on its own.
+#
+# The generated native projects (src-tauri/gen/android, gen/apple) are not committed: each run makes them afresh with
+# "tauri android init" / "tauri ios init" and then applies CalcBJ's own files (scripts/android-project.mjs).
+name: Phone apps
+
+on:
+  push:
+    branches-ignore: [main]
+    paths:
+      - "web/**"
+      - "!**/*.md"
+      - ".github/workflows/phone.yml"
+  workflow_run:
+    workflows: [Desktop apps]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      android:
+        description: "Android: build the APK and test it on an emulator (on main, also attach the signed APK to the release)"
+        type: boolean
+        default: true
+      ios:
+        description: "iPhone (not tested yet): unsigned = IPA for sideloading, testflight = upload to TestFlight"
+        type: choice
+        options: [skip, unsigned, testflight]
+        default: skip
+
+# Each job asks for what it needs.
+permissions: {}
+
+# A newer push to a branch replaces that branch's run still going. The others wait instead of cancelling: a run after a
+# desktop run has its own group per commit (for workflow_run, github.ref is always main), so it can't stop an earlier
+# release from getting its APK, and runs by hand have one per choice of jobs.
+concurrency:
+  group: phone-apps-${{ github.event_name }}-${{ github.event.workflow_run.head_sha || github.ref }}-${{ inputs.android }}-${{ inputs.ios }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+defaults:
+  run:
+    # bash with -e and -o pipefail: a failing command, also inside a pipe, stops the step.
+    shell: bash
+
+jobs:
+  android:
+    name: Android build
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && inputs.android)
+    # Pinned rather than ubuntu-latest, which is moving to Ubuntu 26.04 (with other Java and NDK defaults).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      signed: ${{ steps.release.outputs.signed }}
+    env:
+      # NDK r28 and later link the native library for 16 KB memory pages, which newer phones may use and Google Play
+      # requires; the runner's default NDK (r27) does not. Tauri's own CI uses r29.
+      NDK_VERSION: 29.0.14206865
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # After a desktop run: the commit that run built.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      # The Android Gradle plugin needs JDK 17 or later; 21 is on the runner already.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Phones (arm64), the emulator (x86_64) and the engine (WebAssembly).
+          targets: aarch64-linux-android,x86_64-linux-android,wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            web/engine-wasm -> target
+            web/app/src-tauri -> target
+          # Also kept when a later step fails, so that the next attempt doesn't compile everything again.
+          cache-on-failure: true
+
+      # Gradle and the Android build plugins are downloaded on the first build. Their versions come from the Tauri
+      # CLI's project template, which package-lock.json pins.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('web/app/package-lock.json') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Pick the Android NDK
+        run: |
+          ndk="$ANDROID_HOME/ndk/$NDK_VERSION"
+          [ -d "$ndk" ] || ndk="$ANDROID_NDK_LATEST_HOME"
+          major=$(sed -n 's/^Pkg\.Revision *= *\([0-9]*\).*/\1/p' "$ndk/source.properties")
+          if [ -z "$major" ] || [ "$major" -lt 28 ]; then
+            echo "::error::No Android NDK r28 or later on this runner (found ${major:-none} at $ndk)."
+            exit 1
+          fi
+          # Read by the Tauri CLI; without it the CLI would take the newest NDK in $ANDROID_HOME/ndk.
+          echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "Android NDK r$major: $ndk"
+
+      - name: Install the web app's packages
+        working-directory: web/app
+        run: npm ci
+
+      - name: Create the Android project
+        working-directory: web/app
+        run: node scripts/android-project.mjs
+
+      - name: Build the debug APK for the emulator (x86_64)
+        working-directory: web/app
+        env:
+          # No debug info in the Rust library: it would make the APK several times larger. The WebView can be inspected
+          # all the same, which is what the emulator test needs a debug build for.
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_DEV_STRIP: debuginfo
+        run: npm run tauri -- android build --ci --debug --apk --target x86_64
+
+      - name: Check the debug APK
+        id: debug
+        run: |
+          version=$(node -p "require('./web/app/src-tauri/tauri.conf.json').version")
+          # Where the Tauri CLI (cargo-mobile2) has Gradle put a universal debug APK.
+          apk=web/app/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+          if [ ! -f "$apk" ]; then
+            echo "::error::No debug APK at $apk. The APKs built are:"
+            find web/app/src-tauri/gen/android/app/build/outputs -name '*.apk' -print
+            exit 1
+          fi
+          abis=$( (unzip -Z1 "$apk" 'lib/*' || true) | cut -d/ -f2 | sort -u | tr '\n' ' ')
+          echo "Native code for: $abis"
+          case " $abis" in
+            *" x86_64 "*) ;;
+            *) echo "::error::The debug APK has no x86_64 library for the emulator (it has: ${abis:-none})."; exit 1 ;;
+          esac
+          file="$RUNNER_TEMP/CalcBJ_${version}_android-x86_64-debug.apk"
+          cp "$apk" "$file"
+          ls -l "$file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-debug-apk
+          path: ${{ steps.debug.outputs.file }}
+          # Only for the emulator test below; artifacts count towards the account's storage (1 GB with GitHub Pro).
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Build the release APK for phones (arm64)
+        working-directory: web/app
+        run: npm run tauri -- android build --ci --apk --target aarch64
+
+      - name: Sign and check the release APK
+        id: release
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          version=$(node -p "require('./web/app/src-tauri/tauri.conf.json').version")
+          # Tauri's project template has no signing configuration, so Gradle builds the APK unsigned (and says so).
+          unsigned=web/app/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+          if [ ! -f "$unsigned" ]; then
+            echo "::error::No release APK at $unsigned. The APKs built are:"
+            find web/app/src-tauri/gen/android/app/build/outputs -name '*.apk' -print
+            exit 1
+          fi
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          echo "Android build tools: $tools"
+
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            apk="$RUNNER_TEMP/CalcBJ_${version}_android-arm64.apk"
+            keystore="$RUNNER_TEMP/release.keystore"
+            # --ignore-garbage: a copy made on Windows may carry line breaks with a carriage return.
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode --ignore-garbage > "$keystore"
+            # zipalign before signing, because the signature covers the file as it is; -P 16 puts the native library
+            # on 16 KB page boundaries.
+            "$tools/zipalign" -f -P 16 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
+            # The password goes in through the environment, never on a command line. One password for the keystore
+            # and the key (README.md, Phone apps).
+            "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass env:ANDROID_KEY_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
+              --out "$apk" "$RUNNER_TEMP/aligned.apk"
+            rm -f "$keystore" "$RUNNER_TEMP/aligned.apk"
+            verified=$("$tools/apksigner" verify --print-certs "$apk")
+            # The certificate's fingerprint is public (it is in the APK); Google's developer verification asks for it.
+            certificate=$(printf '%s\n' "$verified" | sed -n 's/.*certificate SHA-256 digest: //p')
+            signed=true
+          else
+            apk="$RUNNER_TEMP/CalcBJ_${version}_android-arm64-unsigned.apk"
+            cp "$unsigned" "$apk"
+            echo "::warning::The release APK is NOT signed: phones won't install it, and it is not attached to the release. Add the repository secrets ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD (README.md, Phone apps)."
+            certificate="none (not signed)"
+            signed=false
+          fi
+
+          # 16 KB memory pages: the zip entries, and every LOAD segment of the native libraries.
+          if ! "$tools/zipalign" -c -P 16 4 "$apk" > /dev/null; then
+            echo "::error::The APK is not aligned for 16 KB memory pages (zipalign -c -P 16)."
+            exit 1
+          fi
+          libs="$RUNNER_TEMP/release-libs"
+          rm -rf "$libs"
+          if ! unzip -q -o "$apk" 'lib/*' -d "$libs"; then
+            echo "::error::The release APK has no native library."
+            exit 1
+          fi
+          abis=$(ls "$libs/lib" | tr '\n' ' ')
+          if [ "$abis" != "arm64-v8a " ]; then
+            echo "::error::The release APK should hold arm64-v8a code only; it has: $abis"
+            exit 1
+          fi
+          readelf="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          for so in "$libs"/lib/*/*.so; do
+            for align in $("$readelf" -lW "$so" | awk '$1 == "LOAD" { print $NF }'); do
+              if [ $((align)) -lt 16384 ]; then
+                echo "::error::$(basename "$so") has a LOAD segment aligned to $align, not 16 KB: phones with 16 KB pages would run it in a compatibility mode."
+                exit 1
+              fi
+            done
+          done
+
+          badging=$("$tools/aapt2" dump badging "$apk")
+          package=$(printf '%s\n' "$badging" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          version_code=$(printf '%s\n' "$badging" | sed -n "s/^package: .*versionCode='\([^']*\)'.*/\1/p")
+          version_name=$(printf '%s\n' "$badging" | sed -n "s/^package: .*versionName='\([^']*\)'.*/\1/p")
+          echo "Package $package, versionCode $version_code, versionName $version_name"
+          if [ "$package" != com.calcbj.app ]; then
+            echo "::error::The APK's package is $package, not com.calcbj.app (src-tauri/tauri.android.conf.json)."
+            exit 1
+          fi
+          size=$(du -k "$apk" | cut -f1)
+          {
+            echo "### Android APK"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| File | \`$(basename "$apk")\`, $(awk "BEGIN { printf \"%.1f\", $size / 1024 }") MB |"
+            echo "| Package | $package, versionCode $version_code, versionName $version_name |"
+            echo "| Native code | $abis, aligned for 16 KB pages |"
+            echo "| Signing certificate SHA-256 | $certificate |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "version=$version"
+            echo "signed=$signed"
+            echo "file=$apk"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-apk
+          path: ${{ steps.release.outputs.file }}
+          retention-days: 14
+          if-no-files-found: error
+
+  android-test:
+    name: Android emulator test
+    needs: android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+          # Only the test script is needed here.
+          sparse-checkout: web/app/scripts
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-debug-apk
+          path: ${{ runner.temp }}/apk
+
+      # Hardware acceleration for the emulator: GitHub's Linux runners have KVM, but the runner user may not open it.
+      - name: Let the emulator use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Test the app on an Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          # Android 17 with Google APIs: the API level Tauri's template targets, and the newest stable x86_64 image
+          # (so the newest System WebView there is); its version is in the test's summary.
+          api-level: "37.0"
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          ram-size: 3072M
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none
+          disable-animations: true
+          # Each line runs on its own (sh -c), so the whole test is one command.
+          script: node web/app/scripts/android-smoke.mjs --apk "${{ runner.temp }}/apk" --out "${{ runner.temp }}/android-smoke"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: android-smoke-test
+          path: ${{ runner.temp }}/android-smoke
+          retention-days: 14
+          if-no-files-found: warn
+
+  android-release:
+    name: Attach the APK to the release
+    needs: [android, android-test]
+    if: >-
+      github.event_name == 'workflow_run' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: v${{ needs.android.outputs.version }}
+    steps:
+      - name: Check the APK and the release
+        id: check
+        env:
+          SIGNED: ${{ needs.android.outputs.signed }}
+        run: |
+          if [ "$SIGNED" != true ]; then
+            echo "::warning::The APK is not signed, so it is not attached to $TAG: add the signing secrets (README.md, Phone apps)."
+            echo "attach=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::warning::There is no release $TAG (the Desktop apps workflow creates it), so the APK is only in this run's artifacts."
+            echo "attach=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "attach=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8
+        if: steps.check.outputs.attach == 'true'
+        with:
+          name: android-apk
+          path: ${{ runner.temp }}/apk
+
+      - name: Attach the APK to the release
+        if: steps.check.outputs.attach == 'true'
+        run: |
+          # --clobber: a new build of the same version replaces the APK, as the desktop workflow does with its files.
+          gh release upload "$TAG" "$RUNNER_TEMP"/apk/*.apk --clobber
+          # Once per release: how to install it, below the desktop apps' instructions.
+          notes=$(gh release view "$TAG" --json body --jq .body)
+          case "$notes" in
+            *"**Android**"*) ;;
+            *)
+              printf '%s\n\n%s\n' "$notes" "**Android** (7.0 or later, 64-bit phones): open the \`.apk\` file on the phone and allow your browser or file manager to install apps when Android asks. A newer version installs over the old one and keeps your settings and results." > "$RUNNER_TEMP/notes.md"
+              gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+              ;;
+          esac
+          echo "Attached $(basename "$RUNNER_TEMP"/apk/*.apk) to $TAG." >> "$GITHUB_STEP_SUMMARY"
+
+  ios:
+    # Prepared, but it has never run: expect to fix things on its first runs.
+    name: iPhone build (not tested yet)
+    if: github.event_name == 'workflow_dispatch' && inputs.ios != 'skip'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      MODE: ${{ inputs.ios }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - name: Not tested yet
+        run: echo "::warning::The iPhone job is prepared but has not been tested yet; the first runs may need fixes."
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check Xcode
+        run: |
+          xcodebuild -version
+          major=$(xcodebuild -version | sed -n 's/^Xcode \([0-9]*\).*/\1/p')
+          # App Store Connect takes only builds made with Xcode 26 or later (since 28 April 2026).
+          if [ "$MODE" = testflight ] && [ "${major:-0}" -lt 26 ]; then
+            echo "::error::Xcode $major is too old for TestFlight uploads (26 or later is needed)."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            web/engine-wasm -> target
+            web/app/src-tauri -> target
+          cache-on-failure: true
+
+      - name: Install the web app's packages
+        working-directory: web/app
+        run: npm ci
+
+      - name: Set up the App Store Connect API key
+        if: env.MODE == 'testflight'
+        env:
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
+          APP_ID: ${{ vars.APP_STORE_APP_ID }}
+        run: |
+          if [ -z "$API_KEY_ID" ] || [ -z "$API_ISSUER" ] || [ -z "$API_PRIVATE_KEY" ] || [ -z "$TEAM" ] || [ -z "$APP_ID" ]; then
+            echo "::error::TestFlight needs the secrets APPLE_API_KEY_ID, APPLE_API_ISSUER and APPLE_API_PRIVATE_KEY and the variables APPLE_DEVELOPMENT_TEAM and APP_STORE_APP_ID (README.md, Phone apps)."
+            exit 1
+          fi
+          # altool looks for the key here, named AuthKey_<key id>.p8.
+          dir="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$dir"
+          printf '%s\n' "$API_PRIVATE_KEY" > "$dir/AuthKey_$API_KEY_ID.p8"
+          # With all three APPLE_API_* set, "tauri ios build" archives without signing and has Xcode sign the export
+          # with the key (certificates and profiles are managed in the cloud). The upload below uses them too.
+          {
+            echo "APPLE_API_KEY=$API_KEY_ID"
+            echo "APPLE_API_ISSUER=$API_ISSUER"
+            echo "APPLE_API_KEY_PATH=$dir/AuthKey_$API_KEY_ID.p8"
+            echo "APPLE_DEVELOPMENT_TEAM=$TEAM"
+          } >> "$GITHUB_ENV"
+
+      - name: Create the Xcode project
+        working-directory: web/app
+        run: |
+          # src-tauri/gen/apple is not committed: it is made on every run (only a Mac can). What must last is in
+          # src-tauri/tauri.ios.conf.json and src-tauri/Info.ios.plist. Init installs XcodeGen with Homebrew.
+          npm run tauri -- ios init --ci --skip-targets-install
+          # The iPhone icons go into gen/apple, which is next to the output folder's parent; the output folder itself
+          # (desktop icons) is thrown away, so src-tauri/icons stays as it is. iPhone icons have no transparency:
+          # --ios-color fills it (the full-bleed maskable icon has none anyway).
+          npm run tauri -- icon public/icons/icon-maskable-512.png --ios-color '#13202a' -o src-tauri/icons-ios-tmp
+          rm -rf src-tauri/icons-ios-tmp
+
+      - name: Build the IPA
+        id: build
+        working-directory: web/app
+        run: |
+          if [ "$MODE" = testflight ]; then
+            # The build number (CFBundleVersion) must grow with every upload and may have at most three numbers.
+            build="$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT"
+            npm run tauri -- ios build --ci --target aarch64 --export-method app-store-connect \
+              --config "{\"bundle\":{\"iOS\":{\"bundleVersion\":\"$build\"}}}"
+          else
+            npm run tauri -- ios build --ci --target aarch64 --no-sign
+          fi
+          # Where the Tauri CLI puts the IPA (gen/apple/build/<arch>/<product name>.ipa).
+          ipa=$(find "$PWD/src-tauri/gen/apple/build/arm64" -name '*.ipa' -print -quit 2> /dev/null || true)
+          if [ -z "$ipa" ]; then
+            echo "::error::No IPA in src-tauri/gen/apple/build/arm64."
+            exit 1
+          fi
+          unzip -p "$ipa" 'Payload/*.app/Info.plist' > "$RUNNER_TEMP/Info.plist"
+          plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$RUNNER_TEMP/Info.plist"; }
+          echo "$(plist CFBundleIdentifier) $(plist CFBundleShortVersionString) ($(plist CFBundleVersion)), iOS $(plist MinimumOSVersion) or later"
+          {
+            echo "ipa=$ipa"
+            echo "bundle_id=$(plist CFBundleIdentifier)"
+            echo "short_version=$(plist CFBundleShortVersionString)"
+            echo "build=$(plist CFBundleVersion)"
+            echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload to TestFlight
+        if: env.MODE == 'testflight'
+        env:
+          IPA: ${{ steps.build.outputs.ipa }}
+          APP_ID: ${{ vars.APP_STORE_APP_ID }}
+          BUNDLE_ID: ${{ steps.build.outputs.bundle_id }}
+          SHORT_VERSION: ${{ steps.build.outputs.short_version }}
+          BUILD: ${{ steps.build.outputs.build }}
+        run: |
+          set +e
+          xcrun altool --upload-package "$IPA" --type ios --apple-id "$APP_ID" --bundle-id "$BUNDLE_ID" \
+            --bundle-short-version-string "$SHORT_VERSION" --bundle-version "$BUILD" \
+            --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER" 2>&1 | tee "$RUNNER_TEMP/altool.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          # altool has been seen to end with exit code 0 after a failed upload, so its success message counts too.
+          if [ "$status" -ne 0 ] || ! grep -qE 'No errors uploading|UPLOAD SUCCEEDED' "$RUNNER_TEMP/altool.log"; then
+            echo "::error::The upload to App Store Connect failed (see the log above)."
+            exit 1
+          fi
+          echo "Uploaded $BUNDLE_ID $SHORT_VERSION ($BUILD) to App Store Connect: it appears in TestFlight once Apple has processed it." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Name the unsigned IPA
+        if: env.MODE == 'unsigned'
+        id: unsigned
+        env:
+          IPA: ${{ steps.build.outputs.ipa }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          file="$RUNNER_TEMP/CalcBJ_${VERSION}_ios-unsigned.ipa"
+          cp "$IPA" "$file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "Unsigned IPA \`$(basename "$file")\` in this run's artifacts: install it with Sideloadly (README.md, Phone apps)." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: env.MODE == 'unsigned'
+        with:
+          name: ios-unsigned-ipa
+          path: ${{ steps.unsigned.outputs.file }}
+          retention-days: 14
+          if-no-files-found: error

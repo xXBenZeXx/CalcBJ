@@ -1,9 +1,16 @@
 [package]
+# The package name also names the desktop program (calcbj-desktop.exe), so it stays as it is.
 name = "calcbj-desktop"
 version = "0.1.2"
-description = "CalcBJ as a desktop app for Windows and Mac: the web interface and engine in a window of their own"
+description = "CalcBJ as an app of its own: the web interface and engine in a window on Windows and Mac, and as the Android and iPhone app"
 edition = "2021"
 publish = false
+
+[lib]
+# The phone apps load CalcBJ as a library: Android the cdylib (libcalcbj_lib.so), the iPhone the staticlib. The
+# desktop program (src/main.rs) uses the rlib. A name other than the program's keeps their files apart on Windows.
+name = "calcbj_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.7", features = [] }
@@ -12,6 +19,13 @@ tauri-build = { version = "2.7", features = [] }
 tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2.8"
 serde = { version = "1", features = ["derive"] }
+
+# Only on the phones. Cargo knows nothing of tauri-build's cfg(mobile), so the systems are named here.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+# Reads and writes the files the dialogs return there: content:// links on Android, file links on the iPhone. It has to
+# be a direct dependency: only then does Cargo tell tauri-build where its Android code is, and without that code in
+# the Android project the plugin cannot start.
+tauri-plugin-fs = "2.7"
 
 [profile.release]
 strip = true

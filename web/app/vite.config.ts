@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { type Plugin, defineConfig } from "vite";
+import { type Plugin, type PluginOption, defineConfig } from "vite";
 
 function listFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -86,13 +86,49 @@ self.addEventListener("fetch", (event) => {
   };
 }
 
-export default defineConfig(({ mode }) => ({
-  // Relative asset paths, so the built app works from any folder of a static host.
-  base: "./",
-  // Mode "desktop" builds the pages for the desktop app (src-tauri), which has its files inside: no offline cache.
-  plugins: mode === "desktop" ? [svelte()] : [svelte(), offline()],
-  define: { __DESKTOP__: JSON.stringify(mode === "desktop") },
-  worker: { format: "es" },
-  build: { target: "es2022" },
-  server: { port: 5173, strictPort: true },
-}));
+/**
+ * The iPhone app's viewport: without a maximum scale, iOS zooms in on every field whose text is smaller than 16 px
+ * when it gets the focus, and the app has no use for pinch zoom. The web app keeps its viewport (and zoom).
+ */
+function iphoneViewport(): Plugin {
+  return {
+    name: "calcbj-iphone-viewport",
+    transformIndexHtml(html) {
+      const out = html.replace(/(<meta name="viewport" content=")([^"]*)"/, '$1$2, maximum-scale=1"');
+      if (out === html) throw new Error("index.html has no viewport meta tag to change");
+      return out;
+    },
+  };
+}
+
+export default defineConfig(({ mode }) => {
+  // Mode "desktop" builds the pages for the desktop app, "android" and "ios" for the phone apps (all in src-tauri).
+  // The apps have their files inside, so they get no offline cache.
+  const mobile = mode === "android" || mode === "ios";
+  const app = mode === "desktop" || mobile;
+  // "tauri android dev" / "tauri ios dev" on a real phone load the dev server over the network from this address.
+  const devHost = process.env.TAURI_DEV_HOST;
+  const plugins: PluginOption[] = [svelte()];
+  if (!app) plugins.push(offline());
+  if (mode === "ios") plugins.push(iphoneViewport());
+  return {
+    // Relative asset paths, so the built app works from any folder of a static host.
+    base: "./",
+    plugins,
+    define: {
+      __DESKTOP__: JSON.stringify(mode === "desktop"),
+      __MOBILE__: JSON.stringify(mobile),
+      __ANDROID__: JSON.stringify(mode === "android"),
+      __IOS__: JSON.stringify(mode === "ios"),
+    },
+    worker: { format: "es" },
+    // The iPhone app supports iOS 16 (src-tauri/tauri.ios.conf.json), whose WebKit lacks a few ES2022 features.
+    build: { target: mode === "ios" ? ["es2022", "safari16"] : "es2022" },
+    server: {
+      port: 5173,
+      strictPort: true,
+      host: devHost || false,
+      hmr: devHost ? { protocol: "ws", host: devHost, port: 5174 } : undefined,
+    },
+  };
+});

@@ -1,3 +1,6 @@
 /target
-# Written by tauri-build on every build
-/gen/schemas
+# All generated: schemas by tauri-build on every build, android and apple by "tauri android init" and
+# "tauri ios init", which CI runs before every phone build. CalcBJ's own Android code is in android/ next to this file.
+/gen
+# Icons "tauri icon" makes for the desktop while the phone icons are made (scripts/android-project.mjs, CI)
+/icons-*-tmp

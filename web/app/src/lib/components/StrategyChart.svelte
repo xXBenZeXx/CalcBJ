@@ -10,7 +10,6 @@
     indices,
     showIndices,
     atLabel,
-    onselect,
   }: {
     kind: "Hard" | "Soft" | "Pair";
     codes: string[];
@@ -18,8 +17,13 @@
     indices: IndexInfo[];
     showIndices: boolean;
     atLabel: string | null;
-    onselect: (details: string) => void;
   } = $props();
+
+  /**
+   * The tapped cell (total × 16 + upcard), whose explanation shows right under this chart: on a phone, below all three
+   * charts it would be far off screen. Each chart keeps its own, so opening one never moves the chart being tapped.
+   */
+  let selected = $state<number | null>(null);
 
   const EV_NAMES = ["stand", "hit", "double", "surrender", "split"];
   const DESCRIPTIONS: Record<string, string> = {
@@ -98,6 +102,14 @@
     if (evs.length) lines.push("EV per unit: " + evs.join("   "));
     return lines.join("\n");
   }
+
+  /** Worked out again when the chart changes, so it always matches the cell (another count shown, for example). */
+  let selectedText = $derived.by(() => {
+    if (selected === null) return "";
+    const t = Math.floor(selected / 16);
+    const u = selected % 16;
+    return totals.includes(t) ? details(t, u, codeOf(t, u)) : "";
+  });
 </script>
 
 <table class="chart">
@@ -112,11 +124,17 @@
       <tr>
         <th>{rowLabel(t)}</th>
         {#each CHART_UPCARDS as u (u)}
+          {@const cell = t * 16 + u}
           {@const code = codeOf(t, u)}
-          {@const list = showIndices ? marks.get(t * 16 + u) : undefined}
+          {@const list = showIndices ? marks.get(cell) : undefined}
           {@const text = details(t, u, code)}
           <td data-action={code.charAt(0) || "-"}>
-            <button type="button" title={text} onclick={() => onselect(text)}>
+            <button
+              type="button"
+              title={text}
+              class:selected={selected === cell}
+              onclick={() => (selected = selected === cell ? null : cell)}
+            >
               <span class="code">{code}</span>
               {#if list}
                 <span class="mark">{list.map(shortIndex).join(" ")}</span>
@@ -129,6 +147,7 @@
     {/each}
   </tbody>
 </table>
+{#if selectedText}<p class="details pre">{selectedText}</p>{/if}
 
 <style>
   .chart {
@@ -192,9 +211,17 @@
     line-height: 1.05;
   }
 
-  button:hover {
+  button.selected {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
+  }
+
+  /* Only with a mouse: on a touch screen the outline would stay on the last cell tapped. */
+  @media (hover: hover) {
+    button:hover {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
   }
 
   .code {
@@ -219,6 +246,13 @@
     border-style: solid;
     border-width: 0 7px 7px 0;
     border-color: transparent var(--index-mark) transparent transparent;
+  }
+
+  .details {
+    background: var(--grid-header);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12.5px;
   }
 
   @media (max-width: 560px) {

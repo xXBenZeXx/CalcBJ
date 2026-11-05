@@ -10,6 +10,10 @@
     "dev:desktop": "npm run wasm && vite --mode desktop",
     "build": "npm run wasm && npm run check && vite build",
     "build:desktop": "npm run wasm && npm run check && vite build --mode desktop",
+    "dev:android": "npm run wasm && vite --mode android",
+    "build:android": "npm run wasm && npm run check && vite build --mode android",
+    "dev:ios": "npm run wasm && vite --mode ios",
+    "build:ios": "npm run wasm && npm run check && vite build --mode ios",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "tauri": "tauri"

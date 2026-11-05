@@ -7,10 +7,11 @@
   import Tiles from "../lib/components/Tiles.svelte";
   import { engine } from "../lib/engine/engine";
   import { count, fixed, grouped, pct, signed, signedPct } from "../lib/format";
+  import { touchScreen } from "../lib/platform";
   import { flatRamp } from "../lib/sim-data";
   import { simulation } from "../lib/simulation.svelte";
-  import { ROUND_OPTIONS, app } from "../lib/state.svelte";
-  import { countText, strategyText } from "../lib/text";
+  import { ROUND_OPTIONS, app, maxThreads } from "../lib/state.svelte";
+  import { countText, keyHint, strategyText } from "../lib/text";
 
   let info = $derived(engine.rulesInfo(app.rules, app.spots));
   let d = $derived(app.sim);
@@ -50,15 +51,16 @@
           </select>
         </Field>
         <Field label="CPU threads">
-          <NumberInput value={app.threads} min={1} max={64} width="4.5em" onchange={(v) => (app.threads = v)} />
+          <NumberInput value={app.threads} min={1} max={maxThreads} width="4.5em" onchange={(v) => (app.threads = v)} />
         </Field>
       </div>
       <p class="note">
-        Simulations only run when you press Run (F5). Settings you already simulated show their results straight away.
+        Simulations only run when you press Run{keyHint("F5")}. Settings you already simulated show their results straight
+        away.
       </p>
       <div class="buttons">
-        <button class="btn btn-primary" onclick={() => app.run()}>▶ Run simulation (F5)</button>
-        <button class="btn" disabled={!simulation.running} onclick={() => app.stop()}>Stop (Esc)</button>
+        <button class="btn btn-primary" onclick={() => app.run()}>▶ Run simulation{keyHint("F5")}</button>
+        <button class="btn" disabled={!simulation.running} onclick={() => app.stop()}>Stop{keyHint("Esc")}</button>
         <button class="btn" onclick={() => app.discardAndRun()}>Discard results & re-run</button>
       </div>
       <p class="note pre">
@@ -77,11 +79,19 @@
         Results for your seat are accumulated separately for each count value, together with the covariance to the
         neighbouring seat. That is all the bet-ramp, risk and optimiser pages need, so they never have to re-simulate.
       </p>
-      <p class="note">
-        Each CPU thread runs its own copy of the engine (WebAssembly in a Web Worker) on its own shoe, and player results
-        are tallied exactly (in 1/20 units). A modern 8-core computer runs on the order of 100 million heads-up rounds per
-        second; more spots per round take proportionally longer, and phones are several times slower.
-      </p>
+      {#if touchScreen}
+        <p class="note">
+          Each CPU thread runs its own copy of the engine (WebAssembly in a Web Worker) on its own shoe, and player results
+          are tallied exactly (in 1/20 units). The Speed tile shows how many rounds per second this device simulates; more
+          spots per round take proportionally longer.
+        </p>
+      {:else}
+        <p class="note">
+          Each CPU thread runs its own copy of the engine (WebAssembly in a Web Worker) on its own shoe, and player results
+          are tallied exactly (in 1/20 units). A modern 8-core computer runs on the order of 100 million heads-up rounds
+          per second; more spots per round take proportionally longer, and phones are several times slower.
+        </p>
+      {/if}
     </Card>
   </div>
 

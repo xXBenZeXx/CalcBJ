@@ -19,6 +19,8 @@ import { EngineInstance } from "./wasm";
 
 let module: WebAssembly.Module;
 let instance: EngineInstance;
+/** Set while a new instance replaces one that trapped. */
+let replacing = false;
 
 /** Downloads and compiles the engine; must finish before anything else uses it. */
 export async function loadEngine(): Promise<void> {
@@ -40,7 +42,15 @@ function call<T>(request: object): T {
   try {
     return instance.call<T>(request);
   } catch (e) {
-    if (instance.broken) void EngineInstance.create(module).then((i) => (instance = i));
+    // A trap leaves the instance unusable. One new instance replaces it (several calls can fail before it is ready,
+    // and each instance costs memory); if even that fails, the next failing call tries again.
+    if (instance.broken && !replacing) {
+      replacing = true;
+      EngineInstance.create(module)
+        .then((i) => (instance = i))
+        .catch(() => {})
+        .finally(() => (replacing = false));
+    }
     throw e;
   }
 }

@@ -10,6 +10,7 @@
   import { engine } from "../lib/engine/engine";
   import { grouped, money, money0, pct } from "../lib/format";
   import { app } from "../lib/state.svelte";
+  import { keyHint } from "../lib/text";
 
   const TARGETS = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.135, 0.2, 0.3];
   const PERCENTILES = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99];
@@ -80,7 +81,7 @@
   });
 
   let banner = $derived.by((): { text: string; tone: "info" | "warn" } | null => {
-    if (!app.sim) return { text: "No simulation yet — press Run simulation (F5).", tone: "info" };
+    if (!app.sim) return { text: `No simulation yet — press Run simulation${keyHint("F5")}.`, tone: "info" };
     if (!a) return { text: "The current ramp never bets.", tone: "info" };
     if (app.simStale)
       return { text: "⚠  Settings changed since the last simulation; figures are for the previous settings.", tone: "warn" };

@@ -2,3 +2,5 @@ node_modules
 dist
 # Built from web/engine-wasm by scripts/build-wasm.mjs
 src/lib/engine/calcbj.wasm
+# The emulator test's output when it runs on this computer (README.md, Phone apps)
+/smoke

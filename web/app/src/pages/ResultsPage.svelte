@@ -9,8 +9,10 @@
   import { engine } from "../lib/engine/engine";
   import type { OptimizerSettings } from "../lib/engine/types";
   import { countLabel, fixed, grouped, money, money0, pct, signedPct, trim } from "../lib/format";
+  import { touchScreen } from "../lib/platform";
   import { simulation } from "../lib/simulation.svelte";
   import { CUSTOM_PRESET, RAMP_PRESETS, app } from "../lib/state.svelte";
+  import { keyHint } from "../lib/text";
 
   let evaluation = $derived(app.evaluation);
   let a = $derived(evaluation?.result.valid ? evaluation.result : null);
@@ -18,10 +20,12 @@
   let counting = $derived(app.count.metric === "RunningCount" ? "running count" : "true count");
 
   let banner = $derived.by((): { text: string; tone: "info" | "warn" } | null => {
-    if (!app.sim) return { text: "No simulation yet — press Run simulation (F5).", tone: "info" };
+    if (!app.sim) return { text: `No simulation yet — press Run simulation${keyHint("F5")}.`, tone: "info" };
     if (app.simStale)
       return {
-        text: "⚠  Settings changed since the last simulation; these results are for the previous settings. Press F5 to re-run.",
+        text:
+          "⚠  Settings changed since the last simulation; these results are for the previous settings. " +
+          (touchScreen ? "Press Run simulation to re-run." : "Press F5 to re-run."),
         tone: "warn",
       };
     if (a?.usedAssumedCov)

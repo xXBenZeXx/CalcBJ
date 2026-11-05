@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
+  import { historyChanged, openLayer, startBackNavigation } from "./lib/back";
   import Banner from "./lib/components/Banner.svelte";
   import { engine } from "./lib/engine/engine";
-  import { openScenario, openScenarioDialog, saveScenario } from "./lib/files";
+  import { openScenario, openScenarioDialog, savedText, saveScenario } from "./lib/files";
   import { count, fixed, money, money0, pct } from "./lib/format";
+  import { insideApp, nativeApp, touchScreen } from "./lib/platform";
   import { simulation } from "./lib/simulation.svelte";
   import { app, type PageId } from "./lib/state.svelte";
   import { sweep } from "./lib/sweep.svelte";
@@ -31,7 +33,8 @@
     { id: "count", glyph: "♣", label: "Count & strategy", short: "Count", subtitle: "Counting system, true-count conversion and the index plays used in the simulation." },
     { id: "sim", glyph: "▶", label: "Simulation", short: "Simulate", subtitle: "Simulate the game once; every bet ramp is then evaluated instantly from the per-count results." },
     { id: "results", glyph: "$", label: "Bet ramp & results", short: "Results", subtitle: "Set your bets by count; win rate, risk and SCORE update instantly from the simulation." },
-    { id: "risk", glyph: "⚖", label: "Bankroll & risk", short: "Risk", subtitle: "Risk of ruin, bankroll requirements and what a trip can look like, for the current bet ramp." },
+    // U+FE0E asks for the scales as a plain symbol: some phones draw ⚖ as a colour emoji otherwise.
+    { id: "risk", glyph: "⚖\uFE0E", label: "Bankroll & risk", short: "Risk", subtitle: "Risk of ruin, bankroll requirements and what a trip can look like, for the current bet ramp." },
     { id: "charts", glyph: "▤", label: "Charts", short: "Charts", subtitle: "How often each count comes up, what it is worth, and how your bets line up with it." },
     { id: "sweep", glyph: "↗", label: "Sensitivity sweep", short: "Sweep", subtitle: "How win rate, SCORE and risk change as one parameter varies — everything else stays as set." },
     { id: "compare", glyph: "⇄", label: "Compare games", short: "Compare", subtitle: "Snapshot the current game, ramp and results, then line several up side by side." },
@@ -43,7 +46,11 @@
   let current = $derived(pages.find((p) => p.id === app.page) ?? pages[0]);
   let moreOpen = $state(false);
   let notice = $state<{ text: string; tone: "info" | "warn" } | null>(null);
+  /** The storage message the user dismissed; it stays hidden until a different one comes. */
+  let storageDismissed = $state<string | null>(null);
   let fileInput: HTMLInputElement;
+  let sheet = $state<HTMLElement>();
+  let moreButton: HTMLButtonElement;
 
   // Settings are kept in the browser.
   $effect(() => app.save());
@@ -54,26 +61,29 @@
     untrack(() => app.showCached(key));
   });
 
-  // ---------------- installing ----------------
+  // ---------------- installing (the web app only) ----------------
 
   interface InstallPrompt extends Event {
     prompt(): Promise<void>;
   }
   let install = $state<InstallPrompt | null>(null);
 
-  onMount(() => {
-    const offer = (e: Event) => {
-      e.preventDefault();
-      install = e as InstallPrompt;
-    };
-    const installed = () => (install = null);
-    window.addEventListener("beforeinstallprompt", offer);
-    window.addEventListener("appinstalled", installed);
-    return () => {
-      window.removeEventListener("beforeinstallprompt", offer);
-      window.removeEventListener("appinstalled", installed);
-    };
-  });
+  // The apps are installed already, and their web views never offer it.
+  if (!nativeApp) {
+    onMount(() => {
+      const offer = (e: Event) => {
+        e.preventDefault();
+        install = e as InstallPrompt;
+      };
+      const installed = () => (install = null);
+      window.addEventListener("beforeinstallprompt", offer);
+      window.addEventListener("appinstalled", installed);
+      return () => {
+        window.removeEventListener("beforeinstallprompt", offer);
+        window.removeEventListener("appinstalled", installed);
+      };
+    });
+  }
 
   async function installApp() {
     moreOpen = false;
@@ -87,7 +97,7 @@
     moreOpen = false;
     try {
       const name = await saveScenario();
-      if (name) notice = { text: __DESKTOP__ ? `Saved ${name}.` : `Saved ${name} to your downloads.`, tone: "info" };
+      if (name) notice = { text: savedText(name), tone: "info" };
     } catch (e) {
       notice = { text: "Could not save: " + (e instanceof Error ? e.message : String(e)), tone: "warn" };
     }
@@ -95,16 +105,18 @@
 
   async function open() {
     moreOpen = false;
-    if (!__DESKTOP__) {
-      fileInput.click();
+    // The build flags here (not just insideApp) let the web app's build leave out the apps' file code.
+    if ((__DESKTOP__ || __MOBILE__) && insideApp) {
+      try {
+        const name = await openScenarioDialog();
+        if (name) notice = { text: `Opened ${name}.`, tone: "info" };
+      } catch (err) {
+        notice = { text: "Could not open the file: " + (err instanceof Error ? err.message : String(err)), tone: "warn" };
+      }
       return;
     }
-    try {
-      const name = await openScenarioDialog();
-      if (name) notice = { text: `Opened ${name}.`, tone: "info" };
-    } catch (err) {
-      notice = { text: "Could not open the file: " + (err instanceof Error ? err.message : String(err)), tone: "warn" };
-    }
+    // The browser only shows its file picker during the tap itself, so this comes before anything that waits.
+    fileInput.click();
   }
 
   async function opened(e: Event) {
@@ -120,10 +132,105 @@
     }
   }
 
+  // ---------------- pages, the More sheet and back ----------------
+
   function go(id: PageId) {
     app.page = id;
     moreOpen = false;
     scrollTo(0, 0);
+    historyChanged();
+  }
+
+  // Back (the Android back gesture, a browser's Back) closes the More sheet or a dialog, then returns to Game rules,
+  // then leaves the app (lib/back.ts).
+  onMount(() =>
+    startBackNavigation({
+      home: "game",
+      pages: pages.map((p) => p.id),
+      page: () => app.page,
+      show: (id) => {
+        app.page = id;
+        scrollTo(0, 0);
+      },
+    }),
+  );
+
+  // While the sheet is open it has a history entry, so that back closes it.
+  $effect(() => {
+    if (moreOpen) return openLayer(closeMore);
+  });
+
+  async function openMore() {
+    moreOpen = true;
+    await tick();
+    // Keyboard and screen-reader users start on the first item; after a tap no focus ring shows.
+    sheet?.querySelector("button")?.focus({ preventScroll: true });
+  }
+
+  /** Closes the sheet without choosing anything (tap outside, Esc, back); focus goes back to the More button. */
+  function closeMore() {
+    if (!moreOpen) return;
+    const focused = !!sheet?.contains(document.activeElement);
+    moreOpen = false;
+    if (focused) moreButton.focus({ preventScroll: true });
+  }
+
+  /** Up, Down, Home and End move between the sheet's items, as in any menu. */
+  function moveInSheet(key: string) {
+    const items = [...(sheet?.querySelectorAll("button") ?? [])];
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const to = key === "Home" ? 0 : key === "End" ? items.length - 1 : at + (key === "ArrowDown" ? 1 : -1);
+    items[(to + items.length) % items.length]?.focus();
+  }
+
+  // The sheet belongs to the phone layout (max-width: 900px, as in the styles below). Turning a big phone to
+  // landscape hides it, so it closes, and back does not spend a press on a sheet that is not on screen.
+  onMount(() => {
+    const phone = matchMedia("(max-width: 900px)");
+    const changed = () => {
+      if (!phone.matches) moreOpen = false;
+    };
+    phone.addEventListener("change", changed);
+    return () => phone.removeEventListener("change", changed);
+  });
+
+  // ---------------- typing on a phone ----------------
+
+  /** Fields that bring up the keyboard. */
+  const TEXT_FIELD =
+    "input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=button]):not([type=submit])" +
+    ':not([type=reset]):not([type=file]):not([type=color]), textarea, [contenteditable]:not([contenteditable="false"])';
+
+  // The Android app's web view ends above the keyboard. On a phone in landscape that leaves so little height that the
+  // top bar and the tab bar would cover the field being typed in, so while one has the focus and the window is that
+  // low, the top bar scrolls with the page and the tab bar hides.
+  let typing = $state(false);
+  if (touchScreen) {
+    onMount(() => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const update = () => {
+        const field = document.activeElement;
+        const now = innerHeight < 450 && !!field?.matches(TEXT_FIELD);
+        if (now === typing) return;
+        typing = now;
+        // With the bars out of the way, the field comes into view (the web view may have scrolled it under them).
+        if (now) tick().then(() => (document.activeElement as HTMLElement | null)?.scrollIntoView({ block: "nearest" }));
+      };
+      // Focus moves in two steps (out of one element, then into the next): look once it has settled.
+      const later = () => {
+        clearTimeout(timer);
+        timer = setTimeout(update, 0);
+      };
+      document.addEventListener("focusin", later);
+      document.addEventListener("focusout", later);
+      window.addEventListener("resize", later);
+      return () => {
+        clearTimeout(timer);
+        document.removeEventListener("focusin", later);
+        document.removeEventListener("focusout", later);
+        window.removeEventListener("resize", later);
+      };
+    });
   }
 
   // ---------------- header and status ----------------
@@ -165,13 +272,19 @@
     return `${rules} · ${countText(app.count)} · ${strategyText(app.strategy)} · ${spots}`;
   });
 
+  // Keyboard shortcuts also work on a phone or tablet with a keyboard; only their hints are left out there.
   function onkeydown(e: KeyboardEvent) {
     const mod = e.ctrlKey || e.metaKey;
     if (e.key === "F5") {
       e.preventDefault();
       app.run();
-    } else if (e.key === "Escape" && simulation.running) {
-      app.stop();
+    } else if (e.key === "Escape") {
+      // Esc closes what is on top first: the More sheet, or a dialog (which closes itself); otherwise it stops a run.
+      if (moreOpen) closeMore();
+      else if (!document.querySelector("dialog[open]") && simulation.running) app.stop();
+    } else if (moreOpen && sheet?.contains(document.activeElement) && ["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+      e.preventDefault();
+      moveInSheet(e.key);
     } else if (mod && e.key.toLowerCase() === "s") {
       e.preventDefault();
       save();
@@ -186,7 +299,7 @@
 
 <input bind:this={fileInput} type="file" accept=".bjev,application/xml,text/xml" hidden onchange={opened} />
 
-<div class="shell">
+<div class="shell" class:typing>
   <aside class="sidebar">
     <div class="brand">
       <span class="logo">21</span>
@@ -203,8 +316,8 @@
       {/each}
     </nav>
     <div class="files">
-      <button class="link" onclick={open}>Open scenario…<span>Ctrl+O</span></button>
-      <button class="link" onclick={save}>Save scenario…<span>Ctrl+S</span></button>
+      <button class="link" onclick={open}>Open scenario…{#if !touchScreen}<span>Ctrl+O</span>{/if}</button>
+      <button class="link" onclick={save}>Save scenario…{#if !touchScreen}<span>Ctrl+S</span>{/if}</button>
       {#if install}<button class="link" onclick={installApp}>Install app…</button>{/if}
     </div>
   </aside>
@@ -250,6 +363,12 @@
       {#if simulation.error}
         <p class="error">Simulation stopped: {simulation.error}</p>
       {/if}
+      {#if app.storageError && app.storageError !== storageDismissed}
+        <div class="notice">
+          <Banner text={app.storageError} tone="warn" />
+          <button class="dismiss" aria-label="Dismiss" onclick={() => (storageDismissed = app.storageError)}>✕</button>
+        </div>
+      {/if}
       {#if app.page === "game"}
         <GamePage />
       {:else if app.page === "count"}
@@ -273,48 +392,71 @@
 
     <footer class="statusbar">
       <span class:warn={app.simStale}>
-        {status}{app.simStale ? "  ·  ⚠ settings changed since this simulation — re-run (F5)" : ""}
+        {status}{app.simStale ? `  ·  ⚠ settings changed since this simulation — re-run${touchScreen ? "" : " (F5)"}` : ""}
       </span>
       <span class="sim-line">{simLine}</span>
     </footer>
   </div>
 
   {#if moreOpen}
-    <button class="scrim" aria-label="Close menu" onclick={() => (moreOpen = false)}></button>
-    <div class="sheet" role="menu">
-      {#each pages.slice(TABS) as p (p.id)}
-        <button role="menuitem" class:active={p.id === app.page} onclick={() => go(p.id)}>
-          <span class="glyph">{p.glyph}</span>{p.label}
-        </button>
-      {/each}
-      <hr />
-      <button role="menuitem" onclick={open}><span class="glyph">↥</span>Open scenario…</button>
-      <button role="menuitem" onclick={save}><span class="glyph">↧</span>Save scenario…</button>
-      {#if install}<button role="menuitem" onclick={installApp}><span class="glyph">⊕</span>Install app…</button>{/if}
-    </div>
+    <button class="scrim" aria-label="Close menu" tabindex="-1" onclick={closeMore}></button>
   {/if}
 
-  <nav class="tabbar">
-    {#each pages.slice(0, TABS) as p (p.id)}
-      <button class:active={p.id === app.page && !moreOpen} onclick={() => go(p.id)}>
-        <span class="glyph">{p.glyph}</span><span>{p.short}</span>
+  <!-- The tab bar, with the More sheet standing on it. -->
+  <div class="dock">
+    {#if moreOpen}
+      <div class="sheet" id="more-sheet" role="menu" aria-label="More" bind:this={sheet}>
+        {#each pages.slice(TABS) as p (p.id)}
+          <button role="menuitem" class:active={p.id === app.page} onclick={() => go(p.id)}>
+            <span class="glyph">{p.glyph}</span>{p.label}
+          </button>
+        {/each}
+        <hr />
+        <button role="menuitem" onclick={open}><span class="glyph">↥</span>Open scenario…</button>
+        <button role="menuitem" onclick={save}><span class="glyph">↧</span>Save scenario…</button>
+        {#if install}<button role="menuitem" onclick={installApp}><span class="glyph">⊕</span>Install app…</button>{/if}
+      </div>
+    {/if}
+
+    <nav class="tabbar">
+      {#each pages.slice(0, TABS) as p (p.id)}
+        <button class:active={p.id === app.page && !moreOpen} onclick={() => go(p.id)}>
+          <span class="glyph">{p.glyph}</span><span>{p.short}</span>
+        </button>
+      {/each}
+      <button
+        bind:this={moreButton}
+        class:active={moreOpen || pages.findIndex((p) => p.id === app.page) >= TABS}
+        aria-expanded={moreOpen}
+        aria-controls="more-sheet"
+        aria-haspopup="menu"
+        onclick={() => (moreOpen ? closeMore() : openMore())}
+      >
+        <span class="glyph">⋯</span><span>More</span>
       </button>
-    {/each}
-    <button
-      class:active={moreOpen || pages.findIndex((p) => p.id === app.page) >= TABS}
-      aria-expanded={moreOpen}
-      onclick={() => (moreOpen = !moreOpen)}
-    >
-      <span class="glyph">⋯</span><span>More</span>
-    </button>
-  </nav>
+    </nav>
+  </div>
 </div>
 
 <style>
+  /* Safe areas (--safe-*, app.css) keep everything clear of the status bar, a camera cutout, the navigation bar and
+     the home indicator, in both layouts: the phone layout below 900 px, and the wide one on tablets and big phones
+     in landscape. Elsewhere they are 0. */
+
   .shell {
     display: grid;
-    grid-template-columns: 216px minmax(0, 1fr);
+    /* The sidebar also covers a camera cutout on the left in landscape. */
+    grid-template-columns: calc(216px + var(--safe-left)) minmax(0, 1fr);
     min-height: 100vh;
+  }
+
+  /* App chrome: a long press neither selects its text nor opens the iPhone's callout (app.css does all buttons). */
+  .sidebar,
+  .topbar,
+  .dock {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
   }
 
   .sidebar {
@@ -326,6 +468,7 @@
     display: flex;
     flex-direction: column;
     overflow-y: auto;
+    padding: var(--safe-top) 0 var(--safe-bottom) var(--safe-left);
   }
 
   .brand {
@@ -374,10 +517,6 @@
     border-left: 3px solid transparent;
   }
 
-  .nav:hover {
-    background: var(--nav-hover);
-  }
-
   .nav.active {
     background: var(--nav-hover);
     color: #fff;
@@ -415,8 +554,15 @@
     font-size: 12px;
   }
 
-  .link:hover {
-    color: #fff;
+  /* Only with a mouse: on a touch screen a hover look would stay on after the tap. */
+  @media (hover: hover) {
+    .nav:hover {
+      background: var(--nav-hover);
+    }
+
+    .link:hover {
+      color: #fff;
+    }
   }
 
   .main {
@@ -432,7 +578,7 @@
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 10px 20px;
+    padding: calc(10px + var(--safe-top)) calc(20px + var(--safe-right)) 10px 20px;
     background: var(--card);
     border-bottom: 1px solid var(--border);
   }
@@ -512,7 +658,7 @@
 
   .page {
     flex: 1;
-    padding: 18px 20px 28px;
+    padding: 18px calc(20px + var(--safe-right)) 28px 20px;
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -522,15 +668,25 @@
     position: relative;
   }
 
+  /* Room for ✕ beside the text (the banner is a div of Banner.svelte). */
+  .notice > :global(div) {
+    padding-right: 44px;
+  }
+
   .dismiss {
     position: absolute;
-    top: 6px;
-    right: 8px;
+    top: 4px;
+    right: 4px;
+    display: grid;
+    place-items: center;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
     border: 0;
+    border-radius: 6px;
     background: none;
     color: var(--muted);
     cursor: pointer;
-    padding: 4px;
   }
 
   .error {
@@ -544,7 +700,7 @@
     display: flex;
     justify-content: space-between;
     gap: 16px;
-    padding: 6px 20px;
+    padding: 6px calc(20px + var(--safe-right)) calc(6px + var(--safe-bottom)) 20px;
     background: var(--card);
     border-top: 1px solid var(--border);
     color: var(--muted);
@@ -559,9 +715,17 @@
     white-space: nowrap;
   }
 
-  .tabbar,
-  .sheet,
+  .dock,
   .scrim {
+    display: none;
+  }
+
+  /* Typing on a phone in landscape (see "typing" in the script): the bars make room for the field. */
+  .shell.typing .topbar {
+    position: static;
+  }
+
+  .shell.typing .dock {
     display: none;
   }
 
@@ -600,8 +764,8 @@
     .topbar {
       flex-wrap: wrap;
       gap: 8px 12px;
-      padding: 10px 14px;
-      padding-top: max(10px, env(safe-area-inset-top));
+      /* A little room under the status bar too: on Android its inset is just its height. */
+      padding: max(10px, calc(var(--safe-top) + 4px)) calc(14px + var(--safe-right)) 10px calc(14px + var(--safe-left));
     }
 
     h1 {
@@ -634,23 +798,30 @@
 
     .chip b {
       font-size: 15px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .page {
-      padding: 12px 12px calc(76px + env(safe-area-inset-bottom));
+      padding: 12px calc(12px + var(--safe-right)) calc(76px + var(--safe-bottom)) calc(12px + var(--safe-left));
       gap: 12px;
+    }
+
+    .dock {
+      display: block;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 7;
     }
 
     .tabbar {
       display: grid;
       grid-template-columns: repeat(5, 1fr);
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      z-index: 6;
       background: var(--nav-bg);
-      padding-bottom: env(safe-area-inset-bottom);
+      padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
     }
 
     .tabbar button {
@@ -682,18 +853,25 @@
       z-index: 6;
       border: 0;
       background: rgb(10 18 25 / 35%);
+      /* A swipe on the dimmed page does not scroll it. */
+      touch-action: none;
     }
 
     .sheet {
       display: flex;
       flex-direction: column;
-      position: fixed;
+      /* Stands right on the tab bar, whatever its height, so that More's marker stays visible. */
+      position: absolute;
       left: 0;
       right: 0;
-      bottom: calc(58px + env(safe-area-inset-bottom));
-      z-index: 7;
+      bottom: 100%;
+      /* Scrolls when it does not fit, as on a phone in landscape (100% is the tab bar's height here). */
+      max-height: calc(100vh - 100% - var(--safe-top) - 8px);
+      max-height: calc(100dvh - 100% - var(--safe-top) - 8px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
       background: var(--nav-bg);
-      padding: 8px 0;
+      padding: 8px var(--safe-right) 8px var(--safe-left);
       border-radius: 12px 12px 0 0;
     }
 

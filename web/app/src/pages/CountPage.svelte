@@ -214,7 +214,6 @@
 
   let viewAt = $state<number | null>(null);
   let showIndices = $state(true);
-  let selected = $state("");
 
   let range = $derived.by(() => {
     const values: number[] = [];
@@ -268,6 +267,7 @@
                     width="3.4em"
                     label={`Tag of ${r}`}
                     format={(v) => signedTrim(v)}
+                    signBelow
                     onchange={(v) => setTag(i, false, v)}
                   />
                 </td>
@@ -286,6 +286,7 @@
                       width="3.4em"
                       label={`Tag of a red ${r}`}
                       format={(v) => signedTrim(v)}
+                      signBelow
                       onchange={(v) => setTag(i, true, v)}
                     />
                   </td>
@@ -416,7 +417,11 @@
             <tbody>
               {#each rows as row, i (i)}
                 <tr class:invalid={toOverride(row) === null}>
-                  <td><input type="checkbox" aria-label="Use this play" bind:checked={row.on} onchange={saveRows} /></td>
+                  <td>
+                    <label class="use">
+                      <input type="checkbox" aria-label="Use this play" bind:checked={row.on} onchange={saveRows} />
+                    </label>
+                  </td>
                   <td>
                     <select aria-label="Hand" bind:value={row.kind} onchange={saveRows}>
                       <option>Hard</option><option>Soft</option><option>Pair</option><option>Insurance</option>
@@ -426,6 +431,9 @@
                     <input
                       class="input"
                       aria-label="Total"
+                      autocapitalize="off"
+                      autocorrect="off"
+                      spellcheck="false"
                       style:width="3.6em"
                       bind:value={row.total}
                       disabled={row.kind === "Insurance"}
@@ -448,7 +456,16 @@
                     </select>
                   </td>
                   <td>
-                    <input class="input" aria-label="Index" style:width="4em" bind:value={row.index} onchange={saveRows} />
+                    <input
+                      class="input"
+                      aria-label="Index"
+                      autocapitalize="off"
+                      autocorrect="off"
+                      spellcheck="false"
+                      style:width="4em"
+                      bind:value={row.index}
+                      onchange={saveRows}
+                    />
                   </td>
                   <td>
                     <button
@@ -511,11 +528,10 @@
       </div>
       {#if chart}
         <div class="charts">
-          <StrategyChart kind="Hard" codes={chart.codes} cellEv={chart.cellEv} {indices} {showIndices} {atLabel} onselect={(t) => (selected = t)} />
-          <StrategyChart kind="Soft" codes={chart.codes} cellEv={chart.cellEv} {indices} {showIndices} {atLabel} onselect={(t) => (selected = t)} />
-          <StrategyChart kind="Pair" codes={chart.codes} cellEv={chart.cellEv} {indices} {showIndices} {atLabel} onselect={(t) => (selected = t)} />
+          <StrategyChart kind="Hard" codes={chart.codes} cellEv={chart.cellEv} {indices} {showIndices} {atLabel} />
+          <StrategyChart kind="Soft" codes={chart.codes} cellEv={chart.cellEv} {indices} {showIndices} {atLabel} />
+          <StrategyChart kind="Pair" codes={chart.codes} cellEv={chart.cellEv} {indices} {showIndices} {atLabel} />
         </div>
-        {#if selected}<p class="selected pre">{selected}</p>{/if}
       {:else}
         <p class="bad">Strategy error: {strategy}</p>
       {/if}
@@ -572,6 +588,27 @@
     padding: 2px 8px;
   }
 
+  /* The compact table's ✕ and checkbox are too small for a finger. */
+  @media (pointer: coarse) {
+    .remove {
+      min-width: 32px;
+      min-height: 32px;
+    }
+
+    .use {
+      display: inline-grid;
+      place-items: center;
+      min-width: 32px;
+      min-height: 32px;
+    }
+
+    .use input {
+      width: 20px;
+      height: 20px;
+      margin: 0;
+    }
+  }
+
   .legend {
     display: flex;
     flex-wrap: wrap;
@@ -621,12 +658,5 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-  }
-
-  .selected {
-    background: var(--grid-header);
-    border-radius: 6px;
-    padding: 8px 10px;
-    font-size: 12.5px;
   }
 </style>

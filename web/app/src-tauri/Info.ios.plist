@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the iPhone app's Info.plist by "tauri ios build" and "tauri ios dev". Not named Info.plist, which
+     the Mac desktop app would take in as well. -->
+<plist version="1.0">
+<dict>
+  <!-- Save scenario writes into the app's Documents folder; these two show it in the Files app as
+       On My iPhone > CalcBJ. -->
+  <key>UIFileSharingEnabled</key>
+  <true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key>
+  <true/>
+  <!-- CalcBJ uses no encryption of its own, so App Store Connect need not ask about export compliance for each build. -->
+  <key>ITSAppUsesNonExemptEncryption</key>
+  <false/>
+  <!-- The dialog plugin links the photo picker (PHPicker), and App Store Connect rejects apps that link photo APIs
+       without this text, although CalcBJ never shows that picker. -->
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>CalcBJ only opens and saves scenario files. It does not use your photos.</string>
+</dict>
+</plist>

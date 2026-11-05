@@ -39,6 +39,12 @@
   --chart-axis: #b9c3cc;
   --radius: 8px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Safe areas: the edges under the status bar, a camera cutout, the navigation bar or the home indicator (0 on
+     a computer). The Android app sets them from its own insets, which older web views don't report (lib/insets.ts). */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -85,6 +91,17 @@ body {
   margin: 0;
 }
 
+html {
+  /* Taps don't flash a grey box, and a double tap doesn't zoom. */
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* The desktop and phone apps (main.ts): the page doesn't bounce or glow at its ends like a web page. */
+html.app {
+  overscroll-behavior: none;
+}
+
 body {
   font: 14px/1.45 var(--font);
   background: var(--bg);
@@ -99,6 +116,21 @@ select {
   color: inherit;
 }
 
+/* A long press on a button or a label neither selects its text nor opens the iPhone's callout; page text, tables and
+   numbers stay selectable. Fields must say so themselves: on iPhones they would not take input otherwise. */
+button,
+label {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 h1,
 h2,
 h3,
@@ -107,9 +139,9 @@ p {
 }
 
 .startup-error {
-  margin: 40px auto;
+  margin: calc(40px + var(--safe-top)) auto 40px;
   max-width: 560px;
-  padding: 0 16px;
+  padding: 0 calc(16px + var(--safe-right)) 0 calc(16px + var(--safe-left));
   color: var(--bad);
 }
 
@@ -154,10 +186,6 @@ select:disabled {
   white-space: nowrap;
 }
 
-.btn:hover {
-  background: var(--grid-header);
-}
-
 .btn:disabled {
   opacity: 0.5;
   cursor: default;
@@ -170,10 +198,6 @@ select:disabled {
   font-weight: 600;
 }
 
-.btn-primary:hover {
-  background: var(--accent-dark);
-}
-
 .btn-danger {
   background: var(--bad);
   border-color: var(--bad);
@@ -181,7 +205,31 @@ select:disabled {
   font-weight: 600;
 }
 
-.btn-danger:hover {
+/* Hover only with a mouse: on a touch screen it would stay on after the tap. A pressed button shows the same shade,
+   which is the feedback a tap gets. */
+@media (hover: hover) {
+  .btn:hover {
+    background: var(--grid-header);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-dark);
+  }
+
+  .btn-danger:hover {
+    background: var(--bad-dark);
+  }
+}
+
+.btn:active:not(:disabled) {
+  background: var(--grid-header);
+}
+
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-dark);
+}
+
+.btn-danger:active:not(:disabled) {
   background: var(--bad-dark);
 }
 
@@ -198,6 +246,22 @@ select:disabled {
   height: 16px;
   accent-color: var(--accent);
   margin: 0;
+}
+
+/* Fingers need bigger targets than a mouse pointer. Controls in tables keep their size (see the end of this file),
+   so the ramp and tag tables still fit a phone. */
+@media (pointer: coarse) {
+  .btn,
+  .input,
+  select,
+  .check {
+    min-height: 40px;
+  }
+
+  .check input {
+    width: 20px;
+    height: 20px;
+  }
 }
 
 .buttons {

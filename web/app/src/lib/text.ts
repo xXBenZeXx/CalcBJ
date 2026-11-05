@@ -1,5 +1,11 @@
 // Descriptions and small helpers shared by the pages (texts as in the Windows app).
 import type { CountSystem, IndexMode, StrategyConfig } from "./engine/types";
+import { touchScreen } from "./platform";
+
+/** A keyboard shortcut in brackets after a command, e.g. " (F5)"; nothing on touch screens, which have no keys for it. */
+export function keyHint(keys: string): string {
+  return touchScreen ? "" : ` (${keys})`;
+}
 
 export const RANK_NAMES = ["", "A", "2", "3", "4", "5", "6", "7", "8", "9", "T"];
 /** Dealer upcards in chart order: 2..9, T, A. */

@@ -72,14 +72,40 @@
     message = "";
   }
 
+  /**
+   * Puts text on the clipboard. Where the Clipboard API is missing or refused (it depends on the app's web view), the
+   * older copy command does it from a hidden field.
+   */
+  async function toClipboard(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // The older way below.
+    }
+    const focused = document.activeElement as HTMLElement | null;
+    const area = document.createElement("textarea");
+    area.value = text;
+    // Read-only: no keyboard comes up on a phone.
+    area.readOnly = true;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const copied = document.execCommand("copy");
+    area.remove();
+    focused?.focus({ preventScroll: true });
+    if (!copied) throw new Error("The copy command was refused.");
+  }
+
   async function copy() {
     const lines = [["Metric", ...app.compare.map((e) => e.name)].join("\t")];
     for (const m of METRICS) lines.push([m.label, ...app.compare.map(m.get)].join("\t"));
     try {
-      await navigator.clipboard.writeText(lines.join("\n"));
+      await toClipboard(lines.join("\n"));
       message = "Copied — paste it into a spreadsheet.";
     } catch {
-      message = "The browser did not allow copying.";
+      message = "Could not copy the table.";
     }
   }
 </script>
@@ -92,7 +118,15 @@
       add();
     }}
   >
-    <input class="input name" placeholder="Name (optional)" aria-label="Scenario name" bind:value={name} />
+    <input
+      class="input name"
+      placeholder="Name (optional)"
+      aria-label="Scenario name"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
+      bind:value={name}
+    />
     <button class="btn btn-primary" type="submit">Add current scenario</button>
     <button class="btn" type="button" disabled={!app.compare.length} onclick={() => (app.compare = [])}>Clear all</button>
     <button class="btn" type="button" disabled={!app.compare.length} onclick={copy}>Copy table</button>
@@ -175,8 +209,19 @@
     padding: 0 2px;
   }
 
-  .remove:hover {
-    color: var(--bad);
+  @media (hover: hover) {
+    .remove:hover {
+      color: var(--bad);
+    }
+  }
+
+  /* A finger needs a bigger target than the ✕; the negative margins keep the header row from growing much. */
+  @media (pointer: coarse) {
+    .remove {
+      min-width: 32px;
+      min-height: 32px;
+      margin: -6px -6px -6px 0;
+    }
   }
 
   .compare td.best {

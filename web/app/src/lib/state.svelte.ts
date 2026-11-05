@@ -7,8 +7,11 @@ import { NUM_BINS } from "./engine/wasm";
 import { countLabel, trim } from "./format";
 import type { CompareEntry, Scenario } from "./scenario";
 import { rampRow, resizeRamp } from "./sim-data";
-import { simulation } from "./simulation.svelte";
+import { clampThreads, defaultThreads, maxThreads, simulation } from "./simulation.svelte";
 import { countText, isBalanced, strategyText } from "./text";
+
+/** The most simulation threads this device may use (the upper limit of the threads setting). */
+export { maxThreads };
 
 export type PageId = "game" | "count" | "sim" | "results" | "risk" | "charts" | "sweep" | "compare" | "guide";
 export const PAGE_IDS: PageId[] = ["game", "count", "sim", "results", "risk", "charts", "sweep", "compare", "guide"];
@@ -34,6 +37,8 @@ export const presets: CountSystem[] = engine.presets();
 const SETTINGS_KEY = "calcbj.settings.v1";
 const SIMS_KEY = "calcbj.sims.v1";
 const CACHE_SIZE = 40;
+/** Rounds per Run unless the user chose otherwise: a phone simulates several times slower than a computer. */
+const DEFAULT_SIM_ROUNDS = __MOBILE__ ? 50e6 : 200e6;
 
 export function defaultRules(): Rules {
   return {
@@ -86,11 +91,19 @@ function read<T>(key: string): T | null {
   }
 }
 
-function write(key: string, value: unknown): void {
+/** "full" when the storage quota is used up, "failed" when storage is blocked or missing. */
+type WriteResult = "ok" | "full" | "failed";
+
+function write(key: string, text: string): WriteResult {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Storage blocked or full: settings then last only for this visit.
+    localStorage.setItem(key, text);
+    return "ok";
+  } catch (e) {
+    // Browsers name the quota error differently (Firefox had its own name; 22 is the old numeric code).
+    const full =
+      e instanceof DOMException &&
+      (e.name === "QuotaExceededError" || e.name === "NS_ERROR_DOM_QUOTA_REACHED" || e.code === 22);
+    return full ? "full" : "failed";
   }
 }
 
@@ -143,8 +156,8 @@ class AppState {
   bankroll = $state(25000);
   ramp = $state<BetRamp>(engine.defaultRamp(defaultRules(), presets[0], null, 3).ramp);
   rampPreset = $state(3);
-  simRounds = $state(200e6);
-  threads = $state(Math.max(1, Math.min(64, navigator.hardwareConcurrency || 4)));
+  simRounds = $state(DEFAULT_SIM_ROUNDS);
+  #threads = $state(defaultThreads);
   tripHours = $state(40);
   tripBankroll = $state(10000);
   compare = $state<CompareEntry[]>([]);
@@ -156,9 +169,27 @@ class AppState {
   /** Settings of the simulation that is running (null while a sweep runs its own simulations). */
   runningKey = $state<string | null>(null);
   cacheCount = $state(0);
+  /**
+   * Why settings or results could not be stored on this device (storage full or blocked), for the interface to show;
+   * null while everything is saved.
+   */
+  storageError = $state<string | null>(null);
 
   private cache = new Map<string, SimData>();
   private restartPending = false;
+  /** Counts "Discard results & re-run": a run that started before a discard must not bring its results back. */
+  private epoch = 0;
+  private settingsSaved: WriteResult = "ok";
+  private simsSaved: WriteResult = "ok";
+
+  /** Simulation threads, always within what this device allows (see maxThreads). */
+  get threads(): number {
+    return this.#threads;
+  }
+
+  set threads(n: number) {
+    this.#threads = clampThreads(n);
+  }
 
   rph = $derived(this.autoRph ? RPH_TABLE[Math.max(1, Math.min(7, this.spots))] : this.manualRph);
 
@@ -184,6 +215,9 @@ class AppState {
 
   constructor() {
     this.restore();
+    // The phone apps keep everything in the WebView's storage, which iOS may clear when the phone runs short of space
+    // unless the app's storage is persistent. The system decides whether to grant it; nothing else depends on it.
+    if (__MOBILE__) void navigator.storage?.persist?.().catch(() => false);
   }
 
   // ---------------- settings that move other settings ----------------
@@ -265,9 +299,9 @@ class AppState {
 
   /** Throws away every stored result and simulates the current settings from scratch. */
   discardAndRun(): void {
+    this.epoch++;
     this.cache.clear();
-    this.cacheCount = 0;
-    write(SIMS_KEY, []);
+    this.saveSims();
     this.sim = null;
     this.run();
   }
@@ -293,14 +327,18 @@ class AppState {
       metric: count.metric,
     };
     this.runningKey = key;
+    const epoch = this.epoch;
     const request = { rules, count, config, spots: this.spots, rounds: this.simRounds, threads: this.threads };
-    simulation.start(request, base, labels, (data, finished) => {
-      if (finished) {
-        this.runningKey = null;
-        if (data) this.remember(data);
-      }
+    simulation.start(request, base, labels, (data, phase) => {
+      const finished = phase === "finished";
+      // After "Discard results" the run's results still contain the discarded ones: they are dropped too.
+      const kept = data !== null && epoch === this.epoch;
+      if (finished) this.runningKey = null;
+      // A checkpoint and the end are both `base` plus the run so far, so each replaces the one before it (the
+      // checkpoint was only there in case the app was closed or killed first).
+      if (kept && phase !== "progress") this.remember(data);
       // Results for settings that are no longer selected only stay on screen if nothing is held for the new ones.
-      if (data && (key === this.simKey || !this.cache.has(this.simKey))) this.sim = data;
+      if (kept && phase !== "checkpoint" && (key === this.simKey || !this.cache.has(this.simKey))) this.sim = data;
       if (finished && this.restartPending) {
         this.restartPending = false;
         this.start();
@@ -316,8 +354,45 @@ class AppState {
     this.cache.delete(d.key);
     this.cache.set(d.key, d);
     while (this.cache.size > CACHE_SIZE) this.cache.delete(this.cache.keys().next().value as string);
+    this.saveSims();
+  }
+
+  /**
+   * Stores the results held, oldest first, without the `drop` oldest. When storage is full, more of the oldest are
+   * left out until the rest fit, but never the newest. Those left out are given up here too once the write worked,
+   * so that storage and memory agree; when nothing fits, everything stays in memory for this visit.
+   */
+  private saveSims(drop = 0): WriteResult {
+    const entries = [...this.cache.values()];
+    // The JSON of an array is its items' JSON between brackets, so each result is turned into text only once.
+    const texts = entries.map((d) => JSON.stringify(d));
+    let dropped = Math.min(drop, texts.length);
+    let result = write(SIMS_KEY, `[${texts.slice(dropped).join(",")}]`);
+    while (result === "full" && dropped < texts.length - 1) {
+      dropped++;
+      result = write(SIMS_KEY, `[${texts.slice(dropped).join(",")}]`);
+    }
+    if (result === "ok") for (const d of entries.slice(0, dropped)) this.cache.delete(d.key);
     this.cacheCount = this.cache.size;
-    write(SIMS_KEY, [...this.cache.values()]);
+    this.simsSaved = result;
+    this.storageChanged();
+    return result;
+  }
+
+  /** Sets `storageError` from the outcome of the last writes. */
+  private storageChanged(): void {
+    const settings = this.settingsSaved !== "ok";
+    const sims = this.simsSaved !== "ok";
+    if (!settings && !sims) {
+      this.storageError = null;
+      return;
+    }
+    const full = this.settingsSaved === "full" || this.simsSaved === "full";
+    const what = settings && sims ? "your settings and results" : settings ? "your settings" : "the newest results";
+    this.storageError =
+      (full ? "This device's storage is full" : "Storage is blocked here") +
+      `, so CalcBJ could not save ${what}. They last until CalcBJ is closed; Save scenario keeps the current game ` +
+      "and its results in a file.";
   }
 
   // ---------------- compare ----------------
@@ -454,7 +529,15 @@ class AppState {
       compare: $state.snapshot(this.compare),
       page: this.page,
     };
-    write(SETTINGS_KEY, s);
+    const text = JSON.stringify(s);
+    let result = write(SETTINGS_KEY, text);
+    // The settings matter more than old results: when storage is full, those are given up, oldest first, as long as
+    // that makes room.
+    while (result === "full" && this.cache.size > 0 && this.saveSims(1) === "ok") result = write(SETTINGS_KEY, text);
+    this.settingsSaved = result;
+    // Results that could not be stored before (storage was full) are tried again, now that there may be room.
+    if (this.simsSaved !== "ok") this.saveSims();
+    else this.storageChanged();
   }
 
   private restore(): void {
@@ -480,8 +563,9 @@ class AppState {
       this.manualRph = number(s.manualRph, 10, 400, 105);
       this.unit = number(s.unit, 0.01, 1e6, 25);
       this.bankroll = number(s.bankroll, 1, 1e9, 25000);
-      this.simRounds = ROUND_OPTIONS.includes(s.simRounds) ? s.simRounds : 200e6;
-      this.threads = number(s.threads, 1, 64, this.threads);
+      this.simRounds = ROUND_OPTIONS.includes(s.simRounds) ? s.simRounds : DEFAULT_SIM_ROUNDS;
+      // The setter keeps it within what this device allows.
+      this.threads = number(s.threads, 1, 64, defaultThreads);
       this.tripHours = number(s.tripHours, 1, 1e5, 40);
       this.tripBankroll = number(s.tripBankroll, 1, 1e9, 10000);
       if (Array.isArray(s.compare)) this.compare = s.compare.map(restoreEntry);

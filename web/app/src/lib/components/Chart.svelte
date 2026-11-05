@@ -3,7 +3,7 @@
 
   /**
    * SVG chart: bars, lines, areas, bands and points over category labels or numeric x values, on one y-axis.
-   * Hover, touch or the arrow keys show every series at the nearest x; "Table" shows the same data as a table.
+   * Hover, a tap or the arrow keys show every series at the nearest x; "Table" shows the same data as a table.
    */
   let {
     series,
@@ -39,12 +39,25 @@
   let width = $state(0);
   let table = $state(false);
   let hover = $state<number | null>(null);
+  /**
+   * A finger lifting ends the touch (pointerleave follows pointerup), so on a touch screen a tap pins the readout
+   * instead; tapping the same point again, or anywhere outside the chart, clears it.
+   */
+  let pinned = $state(false);
+  /**
+   * The touch in progress: the point pinned before it (if any), whether it began on that point, where it began, and
+   * whether it has moved on to other points since.
+   */
+  let touch: { before: number | null; again: boolean; start: number; moved: boolean } | null = null;
+  let svg = $state<SVGSVGElement>();
 
   const M = { l: 54, r: 14, t: 10 };
   let bottom = $derived(26 + (xTitle ? 16 : 0));
   let plotW = $derived(Math.max(10, width - M.l - M.r));
   let plotH = $derived(Math.max(10, height - M.t - bottom));
   let count = $derived(labels ? labels.length : (x?.length ?? 0));
+  /** The point the readout is on; a pinned one can be left behind when the data gets shorter. */
+  let point = $derived(hover !== null && hover < count ? hover : null);
   let categorical = $derived(!!labels);
   let hasBars = $derived(series.some((s) => s.kind === "bar"));
   let legend = $derived(series.length >= 2);
@@ -171,27 +184,85 @@
     return best;
   }
 
-  function onpointer(e: PointerEvent) {
-    const rect = (e.currentTarget as SVGElement).getBoundingClientRect();
-    hover = nearest(e.clientX - rect.left);
+  function pointerX(e: PointerEvent): number {
+    return e.clientX - (e.currentTarget as SVGElement).getBoundingClientRect().left;
   }
+
+  function onpointerdown(e: PointerEvent) {
+    const px = pointerX(e);
+    const i = nearest(px);
+    if (e.pointerType === "mouse") {
+      pinned = false;
+    } else {
+      const before = pinned ? point : null;
+      // Near the pinned point counts as the same point: on a dense line a point is only a pixel or two wide.
+      const again = before !== null && (i === before || (!categorical && Math.abs(px - xAt(before)) <= 12));
+      touch = { before, again, start: i, moved: false };
+    }
+    hover = i;
+  }
+
+  function onpointermove(e: PointerEvent) {
+    if (e.pointerType === "mouse") pinned = false;
+    // A pen hovering over a pinned readout leaves it where it is.
+    else if (!touch && pinned) return;
+    const i = nearest(pointerX(e));
+    if (touch && i !== touch.start) touch.moved = true;
+    hover = i;
+  }
+
+  function onpointerup() {
+    if (!touch) return;
+    // Tapping the pinned point again clears it; any other tap, or a drag, pins the readout where it ends.
+    if (touch.again && !touch.moved) clear();
+    else pinned = true;
+    touch = null;
+  }
+
+  /** The browser took the touch over to scroll the page: the readout goes back to how it was before. */
+  function onpointercancel() {
+    if (!touch) return;
+    hover = touch.before;
+    pinned = touch.before !== null;
+    touch = null;
+  }
+
+  function onpointerleave() {
+    if (!pinned && !touch) hover = null;
+  }
+
+  function clear() {
+    pinned = false;
+    hover = null;
+  }
+
+  // A tap anywhere outside the chart clears a pinned readout. Scrolling does not: a touch that scrolls the page ends
+  // in pointercancel, not pointerup.
+  $effect(() => {
+    if (!pinned) return;
+    const away = (e: PointerEvent) => {
+      if (!svg?.contains(e.target as Node)) clear();
+    };
+    document.addEventListener("pointerup", away, true);
+    return () => document.removeEventListener("pointerup", away, true);
+  });
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
       e.preventDefault();
       const d = e.key === "ArrowRight" ? 1 : -1;
-      hover = hover === null ? (d > 0 ? 0 : count - 1) : Math.max(0, Math.min(count - 1, hover + d));
+      hover = point === null ? (d > 0 ? 0 : count - 1) : Math.max(0, Math.min(count - 1, point + d));
     } else if (e.key === "Escape") {
-      hover = null;
+      clear();
     }
   }
 
-  let tipLeft = $derived(hover === null ? 0 : xAt(hover) + 12 > width - 190 ? Math.max(0, xAt(hover) - 202) : xAt(hover) + 12);
+  let tipLeft = $derived(point === null ? 0 : xAt(point) + 12 > width - 190 ? Math.max(0, xAt(point) - 202) : xAt(point) + 12);
 
   /** What a screen reader announces for the point the arrow keys are on. */
   let spoken = $derived.by(() => {
-    if (hover === null) return "Use the arrow keys to read the values";
-    const i = hover;
+    if (point === null) return "Use the arrow keys to read the values";
+    const i = point;
     const parts = series.flatMap((s) => {
       const t = valueText(s, i);
       return t === null ? [] : [`${s.name} ${t}`];
@@ -242,19 +313,22 @@
   {:else if width > 0}
     <div class="plot">
       <svg
+        bind:this={svg}
         {width}
         {height}
         role="slider"
         aria-label={label}
         aria-valuemin={0}
         aria-valuemax={Math.max(0, count - 1)}
-        aria-valuenow={hover ?? 0}
+        aria-valuenow={point ?? 0}
         aria-valuetext={spoken}
         tabindex="0"
-        onpointermove={onpointer}
-        onpointerdown={onpointer}
-        onpointerleave={() => (hover = null)}
-        onblur={() => (hover = null)}
+        {onpointerdown}
+        {onpointermove}
+        {onpointerup}
+        {onpointercancel}
+        {onpointerleave}
+        onblur={clear}
         {onkeydown}
       >
         {#each yTicks as t (t)}
@@ -275,7 +349,7 @@
           {:else if s.kind === "bar"}
             {#each s.values as v, i (i)}
               {#if v !== null && Number.isFinite(v)}
-                <path d={barPath(i, v)} fill={s.colors?.[i] ?? s.color} class:lifted={hover === i} />
+                <path d={barPath(i, v)} fill={s.colors?.[i] ?? s.color} class:lifted={point === i} />
               {/if}
             {/each}
           {/if}
@@ -283,8 +357,8 @@
 
         <line class="axis" x1={M.l} x2={M.l + plotW} y1={baseline} y2={baseline} />
 
-        {#if hover !== null && !hasBars}
-          <line class="crosshair" x1={xAt(hover)} x2={xAt(hover)} y1={M.t} y2={M.t + plotH} />
+        {#if point !== null && !hasBars}
+          <line class="crosshair" x1={xAt(point)} x2={xAt(point)} y1={M.t} y2={M.t + plotH} />
         {/if}
 
         {#each series as s (s.name)}
@@ -298,23 +372,23 @@
               {/if}
             {/each}
           {/if}
-          {#if hover !== null && (s.kind === "line" || s.kind === "area") && !s.markers}
-            {@const v = s.values[hover]}
-            {#if v !== null && Number.isFinite(v)}<circle class="dot" cx={xAt(hover)} cy={yAt(v)} r="4.5" fill={s.color} />{/if}
+          {#if point !== null && (s.kind === "line" || s.kind === "area") && !s.markers}
+            {@const v = s.values[point]}
+            {#if v !== null && Number.isFinite(v)}<circle class="dot" cx={xAt(point)} cy={yAt(v)} r="4.5" fill={s.color} />{/if}
           {/if}
         {/each}
 
         <rect class="hit" x={M.l} y={M.t} width={plotW} height={plotH} />
       </svg>
 
-      {#if hover !== null}
+      {#if point !== null}
         <div class="tip" style:left="{tipLeft}px" role="status">
-          <div class="tip-x">{xLabel(hover)}</div>
+          <div class="tip-x">{xLabel(point)}</div>
           {#each series as s (s.name)}
-            {@const text = valueText(s, hover)}
+            {@const text = valueText(s, point)}
             {#if text !== null}
               <div class="tip-row">
-                <span class="tip-key" style:background={s.colors?.[hover] ?? s.color}></span>
+                <span class="tip-key" style:background={s.colors?.[point] ?? s.color}></span>
                 <strong>{text}</strong>
                 {#if series.length > 1}<span class="tip-name">{s.name}</span>{/if}
               </div>
@@ -391,6 +465,14 @@
     text-underline-offset: 2px;
   }
 
+  /* A finger needs a bigger target than the small link-like text. */
+  @media (pointer: coarse) {
+    .toggle {
+      min-height: 32px;
+      padding: 6px 10px;
+    }
+  }
+
   .plot {
     position: relative;
   }
@@ -400,6 +482,15 @@
     overflow: visible;
     touch-action: pan-y;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* A finger moving along the chart reads values; it should not select the axis labels or open a callout. */
+  @media (pointer: coarse) {
+    svg {
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }
   }
 
   svg:focus {
