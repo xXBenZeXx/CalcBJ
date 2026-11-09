@@ -1,7 +1,7 @@
 {
   "name": "calcbj-web",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "CalcBJ in the browser: blackjack advantage calculator (Svelte interface, Rust engine as WebAssembly)",
   "scripts": {
