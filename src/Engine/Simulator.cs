@@ -213,7 +213,8 @@ namespace CalcBJ.Engine
             switch (cs.Rounding)
             {
                 case TcRounding.Truncate: return (int)(tc + (tc >= 0 ? 1e-9 : -1e-9));
-                case TcRounding.Round: return (int)Math.Round(tc, MidpointRounding.AwayFromZero);
+                // The same guard as the other two: an exact half (27 / (216 / 52) = 6.5) may come out a hair below it.
+                case TcRounding.Round: return (int)Math.Round(tc + (tc >= 0 ? 1e-9 : -1e-9), MidpointRounding.AwayFromZero);
                 default: return (int)Math.Floor(tc + 1e-9);
             }
         }
@@ -288,6 +289,8 @@ namespace CalcBJ.Engine
         readonly int nCards, cut, spots, maxHands, rcMin, rcMax, rcWidth, irc, bj20, spotA, spotB, dblMode;
         readonly bool h17, das, rsa, hsa, peek, takesAll, burn, esPeek, surrAtTurn, insOn, lateSurr;
         readonly bool[] insure;
+        readonly CountSystem count;
+        readonly int scale;
         readonly int[] shoe;
         readonly int[] baseShoe;
         readonly int[] scratch;
@@ -328,7 +331,7 @@ namespace CalcBJ.Engine
             nCards = r.TotalCards;
             spots = Math.Max(1, Math.Min(7, su.Spots));
             cut = r.CutCard(spots);
-            maxHands = Math.Max(1, Math.Min(MAXH, r.MaxSplitHands));
+            maxHands = Math.Max(1, Math.Min(Rules.MaxSplitLimit, r.MaxSplitHands));
             h17 = r.H17; das = r.DAS; rsa = r.ResplitAces; hsa = r.HitSplitAces;
             peek = r.HoleCard == HoleCardRule.USPeek;
             takesAll = r.HoleCard == HoleCardRule.ENHC;
@@ -339,7 +342,8 @@ namespace CalcBJ.Engine
             insOn = r.Insurance;
             bj20 = (int)Math.Round(r.BlackjackPays * 20);
             dblMode = (int)r.DoubleOn;
-            int scale = cs.Scale();
+            count = cs;
+            scale = cs.Scale();
             var packed = new int[20];
             for (int code = 0; code < 20; code++)
                 packed[code] = (((int)Math.Round(cs.TagOfCode(code) * scale) + TagBias) << 4) | ((code >> 1) + 1);
@@ -457,8 +461,19 @@ namespace CalcBJ.Engine
             int cr = nCards - pos;
             if (cr < 0) cr = 0;
             int r = rc;
-            if (r < rcMin) r = rcMin; else if (r > rcMax) r = rcMax;
+            if (r < rcMin || r > rcMax) return OutsideBin(r, cr);
             return binRows[crRow[cr] + (r - rcMin)];
+        }
+
+        /// <summary>
+        /// The bin of a running count the table doesn't hold. The table stops at 4000 scaled units either side; only
+        /// custom counts with very fine tags (thirds and twentieths mixed) and many decks get beyond it.
+        /// </summary>
+        int OutsideBin(int r, int cr)
+        {
+            int v = Simulator.MetricValue(count, scale, r, cr);
+            if (v < PlayTable.BinMin) v = PlayTable.BinMin; else if (v > PlayTable.BinMax) v = PlayTable.BinMax;
+            return v - PlayTable.BinMin;
         }
 
         /// <summary>Decision flags for a cell at the current count; cells without index plays skip the count lookup.</summary>

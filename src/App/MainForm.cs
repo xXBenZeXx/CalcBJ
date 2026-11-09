@@ -450,7 +450,7 @@ namespace CalcBJ.App
                 chipWin.Set(Theme.Money(a.WinPerHour), a.WinPerHour >= 0 ? Theme.Good : Theme.Bad);
                 chipSd.Set(Theme.Money0(a.SdPerHour), Theme.Text);
                 chipScore.Set(Theme.F(a.Score, "0.0"), Theme.Text);
-                chipRor.Set(Theme.Pct(a.ROR, a.ROR < 0.001 ? 3 : 1), a.ROR > 0.2 ? Theme.Bad : Theme.Text);
+                chipRor.Set(Theme.Ror(a.ROR), a.ROR > 0.2 ? Theme.Bad : Theme.Text);
             }
             else
             {

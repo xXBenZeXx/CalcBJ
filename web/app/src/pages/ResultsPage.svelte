@@ -8,7 +8,7 @@
   import Tiles from "../lib/components/Tiles.svelte";
   import { engine } from "../lib/engine/engine";
   import type { OptimizerSettings } from "../lib/engine/types";
-  import { countLabel, fixed, grouped, money, money0, pct, signedPct, trim } from "../lib/format";
+  import { countLabel, fixed, grouped, money, money0, pct, ror, signedPct, trim } from "../lib/format";
   import { touchScreen } from "../lib/platform";
   import { simulation } from "../lib/simulation.svelte";
   import { CUSTOM_PRESET, RAMP_PRESETS, app } from "../lib/state.svelte";
@@ -21,6 +21,13 @@
 
   let banner = $derived.by((): { text: string; tone: "info" | "warn" } | null => {
     if (!app.sim) return { text: `No simulation yet — press Run simulation${keyHint("F5")}.`, tone: "info" };
+    if (app.simOfAnotherCount)
+      return {
+        text:
+          "⚠  The last simulation was run with another count, so this bet ramp can't be worked out on it. " +
+          (touchScreen ? "Press Run simulation for these settings." : "Press F5 to simulate these settings."),
+        tone: "warn",
+      };
     if (app.simStale)
       return {
         text:
@@ -280,7 +287,7 @@
           />
           <Tile
             title="Risk of ruin"
-            value={pct(a.ror, a.ror < 0.001 ? 4 : 2)}
+            value={ror(a.ror)}
             sub={`lifetime, ${money0(app.bankroll)} bankroll`}
             tone={a.ror > 0.2 ? "bad" : a.ror < 0.05 ? "good" : undefined}
             tip="Chance of eventually losing the whole bankroll if you never change your unit: exp(−2·EV·B/variance)."

@@ -14,7 +14,7 @@ pub mod strategy;
 pub mod types;
 
 pub use analysis::{AnalysisResult, BetRamp, BinStat, OptimizerSettings};
-pub use ca::{CaEngine, CaResult, flag, full_shoe, house_edge_off_top};
+pub use ca::{CaEngine, CaResult, ExactAdjust, basic_for, effects_of_removal, flag, full_shoe, house_edge_off_top};
 pub use dealer::{dealer_outcomes, dealer_states};
 pub use num::{dotnet_fixed, dotnet_general};
 #[cfg(not(target_arch = "wasm32"))]

@@ -5,7 +5,7 @@
   import Field from "../lib/components/Field.svelte";
   import NumberInput from "../lib/components/NumberInput.svelte";
   import type { AnalysisResult } from "../lib/engine/types";
-  import { count, fixed, grouped, money, pct, signedPct } from "../lib/format";
+  import { count, fixed, grouped, money, pct, ror, signedPct } from "../lib/format";
   import { simulation } from "../lib/simulation.svelte";
   import { SWEEP_METRICS, SWEEP_PARAMETERS, SWEEP_ROUNDS, sweep } from "../lib/sweep.svelte";
 
@@ -105,7 +105,7 @@
                   <td class="num">{signedPct(r.edgePct / 100, 2)}</td>
                   <td class="num">{fixed(r.score, 1)}</td>
                   <td class="num">{r.ev > 0 ? grouped(r.hoursN0) : "—"}</td>
-                  <td class="num">{pct(r.ror, 1)}</td>
+                  <td class="num">{ror(r.ror)}</td>
                 {:else}
                   <td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>
                 {/if}

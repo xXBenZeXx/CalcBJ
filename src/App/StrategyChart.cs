@@ -89,19 +89,26 @@ namespace CalcBJ.App
         {
             string p = ShortPlay(i.Play);
             if (i.Condition == "always") return p + "*";
-            int v = (int)Math.Round(i.Threshold);
-            string n = v > 0 ? "+" + v : v.ToString(CultureInfo.InvariantCulture);
+            string n = Signed((int)Math.Round(i.Threshold));
+            if (!double.IsNaN(i.Other))
+            {
+                // Two ends: "from X to Y" (R-8..-6), or "at X or less, and at Y or more" (two marks).
+                string m = Signed((int)Math.Round(i.Other));
+                return i.AtOrAbove ? p + n + ".." + m : p + "≤" + n + " " + p + "≥" + m;
+            }
             return p + (i.AtOrAbove ? "≥" : "≤") + n;
         }
 
-        static string EvText(double[] ev, int cell)
+        static string Signed(int v) { return v > 0 ? "+" + v : v.ToString(CultureInfo.InvariantCulture); }
+
+        static string EvText(CAResult ca, Rules rules, int cell)
         {
-            if (ev == null) return "";
+            if (ca == null || ca.CellEV == null) return "";
             string[] names = { "stand", "hit", "double", "surrender", "split" };
             var sb = new StringBuilder();
             for (int k = 0; k < 5; k++)
             {
-                double v = ev[cell * 5 + k];
+                double v = ca.ShownEV(rules, cell, k);
                 if (double.IsNaN(v)) continue;
                 if (sb.Length > 0) sb.Append("   ");
                 sb.Append(names[k]).Append(' ').Append(v.ToString("+0.000;-0.000", CultureInfo.InvariantCulture));
@@ -110,8 +117,10 @@ namespace CalcBJ.App
         }
 
         /// <summary>Shows the strategy at a count value, or basic strategy when count is null.</summary>
-        public void Render(PlayTable pt, int? count, bool showIndices, List<IndexInfo> indices, string countLabel)
+        public void Render(PlayTable pt, Rules rules, int? count, bool showIndices, List<IndexInfo> indices, string countLabel)
         {
+            // With basic strategy only there is no analysis per count: every count shows the off-the-top values.
+            if (pt.PerBin == null) count = null;
             int rows = totals.Length;
             codes = new string[rows, 10];
             marks = new string[rows, 10];
@@ -170,8 +179,9 @@ namespace CalcBJ.App
                             tip.Append("\nIndex: ").Append(i.Text);
                         }
                     }
-                    string ev = EvText(ca == null ? null : ca.CellEV, cell);
-                    if (ev.Length > 0) tip.Append("\nEV per unit: ").Append(ev);
+                    string ev = EvText(ca, rules, cell);
+                    // After the peek the dealer has no blackjack; otherwise the values count the rounds lost to one.
+                    if (ev.Length > 0) tip.Append(CAResult.AfterPeek(rules) ? "\nEV per unit (the dealer has no blackjack): " : "\nEV per unit, from the deal: ").Append(ev);
                     marks[r, c] = showIndices ? mark : "";
                     tips[r, c] = tip.ToString();
                 }

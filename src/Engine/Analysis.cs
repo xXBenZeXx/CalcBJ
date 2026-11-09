@@ -17,7 +17,17 @@ namespace CalcBJ.Engine
         public bool MeasuredCov;
         /// <summary>Variance of the estimate of Mean.</summary>
         public double MeanVar;
+        /// <summary>
+        /// Mean, E[x^2] and the variance of the mean of the last seat alone, where the player sits when playing one hand.
+        /// With index plays that seat does a little better than the one beside it, whose cards it has seen (mostly with
+        /// one or two decks). Mean and M2 average the two seats, for the rows that play both.
+        /// </summary>
+        public double MeanLast, M2Last, MeanVarLast;
         public double Var { get { return M2 - Mean * Mean; } }
+        /// <summary>Mean per hand when playing hands hands at this count.</summary>
+        public double MeanFor(int hands) { return hands == 1 ? MeanLast : Mean; }
+        /// <summary>E[x^2] per hand when playing hands hands at this count.</summary>
+        public double M2For(int hands) { return hands == 1 ? M2Last : M2; }
     }
 
     /// <summary>Bet ramp over a display range: row 0 covers every count at or below Min, the last row every count at or above Max.</summary>
@@ -73,10 +83,11 @@ namespace CalcBJ.Engine
             return m;
         }
 
-        public double MinPositiveUnits()
+        /// <summary>Smallest amount on the table in a round that is played: units per hand times hands.</summary>
+        public double MinBet()
         {
             double m = double.MaxValue;
-            foreach (double u in Units) if (u > 0) m = Math.Min(m, u);
+            for (int i = 0; i < Units.Length; i++) if (Units[i] > 0) m = Math.Min(m, Units[i] * Math.Max(1, Hands[i]));
             return m == double.MaxValue ? 0 : m;
         }
     }
@@ -157,6 +168,9 @@ namespace CalcBJ.Engine
                         double v = Math.Max(0, b.M2 - b.Mean * b.Mean);
                         double c = Math.Max(0, b.Cov - b.Mean * b.Mean);
                         b.MeanVar = (v + c) / (2.0 * n);
+                        b.MeanLast = d.SA[i] / (20.0 * n);
+                        b.M2Last = d.QA[i] / (400.0 * n);
+                        b.MeanVarLast = Math.Max(0, b.M2Last - b.MeanLast * b.MeanLast) / n;
                     }
                     else
                     {
@@ -165,6 +179,7 @@ namespace CalcBJ.Engine
                         double v = Math.Max(0, b.M2 - b.Mean * b.Mean);
                         b.Cov = b.Mean * b.Mean + AssumedCorrelation * v;
                         b.MeanVar = v / n;
+                        b.MeanLast = b.Mean; b.M2Last = b.M2; b.MeanVarLast = b.MeanVar;
                     }
                 }
                 res[i] = b;
@@ -187,6 +202,8 @@ namespace CalcBJ.Engine
                 x.N += b.N; x.Freq += b.Freq;
                 x.Mean += b.Freq * b.Mean; x.M2 += b.Freq * b.M2; x.Cov += b.Freq * b.Cov;
                 x.MeanVar += b.Freq * b.Freq * b.MeanVar;
+                x.MeanLast += b.Freq * b.MeanLast; x.M2Last += b.Freq * b.M2Last;
+                x.MeanVarLast += b.Freq * b.Freq * b.MeanVarLast;
                 x.MeasuredCov = b.MeasuredCov;
             }
             for (int i = 0; i < rows; i++)
@@ -195,6 +212,7 @@ namespace CalcBJ.Engine
                 if (x.Freq > 0)
                 {
                     x.Mean /= x.Freq; x.M2 /= x.Freq; x.Cov /= x.Freq; x.MeanVar /= x.Freq * x.Freq;
+                    x.MeanLast /= x.Freq; x.M2Last /= x.Freq; x.MeanVarLast /= x.Freq * x.Freq;
                 }
             }
             return r;
@@ -214,20 +232,22 @@ namespace CalcBJ.Engine
             for (int i = 0; i < nr; i++)
             {
                 var x = rows[i];
-                res.RowFreq[i] = x.Freq; res.RowEV[i] = x.Mean; res.RowN[i] = x.N;
-                res.RowM2[i] = x.M2;
                 double u = ramp.Units[i];
                 int h = Math.Max(1, ramp.Hands[i]);
+                // One hand is the last seat's; two hands are the last two seats (see BinStat.MeanLast).
+                double mean = x.MeanFor(h), hm2 = x.M2For(h);
+                res.RowFreq[i] = x.Freq; res.RowEV[i] = mean; res.RowN[i] = x.N;
+                res.RowM2[i] = hm2;
                 if (u <= 0 || x.Freq <= 0) continue;
                 if (h > 1 && !x.MeasuredCov) res.UsedAssumedCov = true;
-                double e = h * u * x.Mean;
-                double q = u * u * (h * x.M2 + h * (h - 1) * x.Cov);
+                double e = h * u * mean;
+                double q = u * u * (h * hm2 + h * (h - 1) * x.Cov);
                 ev += x.Freq * e;
                 m2 += x.Freq * q;
                 bet += x.Freq * h * u;
                 played += x.Freq;
                 res.RowContribution[i] = x.Freq * e;
-                seVar += x.Freq * x.Freq * h * h * u * u * x.MeanVar;
+                seVar += x.Freq * x.Freq * h * h * u * u * (h == 1 ? x.MeanVarLast : x.MeanVar);
             }
             if (bet <= 0) return res;
             res.Valid = true;
@@ -248,7 +268,7 @@ namespace CalcBJ.Engine
             res.ROR = ev > 0 ? Math.Exp(-2 * ev * bU / res.Var) : 1.0;
             res.CEPerHour = (ev - res.Var / (2 * bU)) * roundsPerHour * unit;
             res.KellyUnit = ev > 0 ? bankroll * ev / m2 : 0;
-            double mx = ramp.MaxBet(), mn = ramp.MinPositiveUnits();
+            double mx = ramp.MaxBet(), mn = ramp.MinBet();
             res.Spread = mn > 0 ? mx / mn : 0;
             return res;
         }
@@ -327,29 +347,34 @@ namespace CalcBJ.Engine
         static double RowGain(BinStat x, double b, int h, double lambda)
         {
             if (b <= 0) return 0;
-            return x.Freq * (h * b * x.Mean - b * b * (h * x.M2 + h * (h - 1) * x.Cov) / (2 * lambda));
+            return x.Freq * (h * b * x.MeanFor(h) - b * b * (h * x.M2For(h) + h * (h - 1) * x.Cov) / (2 * lambda));
         }
 
         static void BestBet(BinStat x, OptimizerSettings os, double lambda, out double bet, out int hands)
         {
             bet = os.AllowWongOut ? 0 : os.MinUnits; hands = 1;
             double bestG = os.AllowWongOut ? 0 : RowGain(x, os.MinUnits, 1, lambda);
-            if (x.Freq <= 0) { bet = os.AllowWongOut ? 0 : os.MinUnits; return; }
+            if (x.Freq <= 0) return;
             int maxH = Math.Max(1, os.MaxHands);
             double inc = os.Increment > 0 ? os.Increment : 0.01;
+            // A bet is the minimum or a multiple of the increment above it, up to the maximum: multiples kLo to kHi. The
+            // minimum itself needn't be a multiple (2.5 units with steps of 1).
+            double kLo = Math.Floor(os.MinUnits / inc + 1e-9) + 1, kHi = Math.Floor(os.MaxUnits / inc + 1e-9);
             for (int h = 1; h <= maxH; h++)
             {
-                double denom = x.M2 + (h - 1) * x.Cov;
+                double denom = x.M2For(h) + (h - 1) * x.Cov;
                 if (denom <= 0) continue;
-                double raw = lambda * x.Mean / denom;
-                double lo = Math.Floor(raw / inc) * inc, hi = lo + inc;
-                double[] cand = { os.MinUnits, os.MaxUnits, lo, hi };
-                foreach (double c0 in cand)
+                // The gain falls off either side of the unconstrained best bet, so the best allowed bet is the minimum
+                // or one of the multiples next to it.
+                double k = Math.Floor(lambda * x.MeanFor(h) / denom / inc);
+                for (int j = 0; j < 3; j++)
                 {
-                    double c = Math.Max(os.MinUnits, Math.Min(os.MaxUnits, c0));
-                    c = Math.Round(c / inc) * inc;
-                    if (c < os.MinUnits - 1e-9) c += inc;
-                    if (c > os.MaxUnits + 1e-9) c -= inc;
+                    double c = os.MinUnits;
+                    if (j > 0)
+                    {
+                        if (kHi < kLo) break;   // no multiple of the increment between the minimum and the maximum
+                        c = Math.Max(kLo, Math.Min(kHi, k + (j - 1))) * inc;
+                    }
                     double g = RowGain(x, c, h, lambda);
                     if (g > bestG + 1e-15) { bestG = g; bet = c; hands = h; }
                 }
@@ -402,8 +427,8 @@ namespace CalcBJ.Engine
                 double u = r.Units[i]; int h = Math.Max(1, r.Hands[i]);
                 if (u <= 0) continue;
                 var x = rows[i];
-                ev += x.Freq * h * u * x.Mean;
-                m2 += x.Freq * u * u * (h * x.M2 + h * (h - 1) * x.Cov);
+                ev += x.Freq * h * u * x.MeanFor(h);
+                m2 += x.Freq * u * u * (h * x.M2For(h) + h * (h - 1) * x.Cov);
             }
             double v = m2 - ev * ev;
             if (v <= 0 || ev <= 0) return ev;

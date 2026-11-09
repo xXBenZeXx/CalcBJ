@@ -45,6 +45,8 @@
 
   let banner = $derived.by((): { text: string; tone: "info" | "warn" } | null => {
     if (!app.sim) return { text: `No simulation yet — press Run simulation${keyHint("F5")}.`, tone: "info" };
+    if (app.simOfAnotherCount)
+      return { text: "The last simulation was run with another count. Run the simulation for these settings.", tone: "info" };
     if (!a) return { text: "The current ramp never bets.", tone: "info" };
     if (app.simStale)
       return { text: "⚠  Settings changed since the last simulation; charts show the previous settings.", tone: "warn" };

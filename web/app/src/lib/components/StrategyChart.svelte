@@ -7,6 +7,7 @@
     kind,
     codes,
     cellEv,
+    afterPeek,
     indices,
     showIndices,
     atLabel,
@@ -14,6 +15,8 @@
     kind: "Hard" | "Soft" | "Pair";
     codes: string[];
     cellEv: (number | null)[];
+    /** The values are given that the dealer has no blackjack (after the peek); otherwise from the deal. */
+    afterPeek: boolean;
     indices: IndexInfo[];
     showIndices: boolean;
     atLabel: string | null;
@@ -85,8 +88,11 @@
   function shortIndex(i: IndexInfo): string {
     const p = SHORT_PLAYS[i.play] ?? "I";
     if (i.condition === "always") return p + "*";
-    const v = Math.round(i.threshold);
-    return p + (i.atOrAbove ? "≥" : "≤") + (v > 0 ? "+" + v : String(v));
+    const n = (x: number) => (Math.round(x) > 0 ? "+" : "") + Math.round(x);
+    // Two ends: "from X to Y" (R-8..-6), or "at X or less, and at Y or more" (two marks).
+    if (i.other !== null && i.other !== undefined)
+      return i.atOrAbove ? p + n(i.threshold) + ".." + n(i.other) : `${p}≤${n(i.threshold)} ${p}≥${n(i.other)}`;
+    return p + (i.atOrAbove ? "≥" : "≤") + n(i.threshold);
   }
 
   function details(t: number, u: number, code: string): string {
@@ -99,7 +105,9 @@
       const v = cellEv[cell * 5 + k];
       return v === null || v === undefined ? [] : [`${name} ${v >= 0 ? "+" : ""}${v.toFixed(3)}`];
     });
-    if (evs.length) lines.push("EV per unit: " + evs.join("   "));
+    // After the peek the dealer has no blackjack; otherwise the values count the rounds lost to one.
+    if (evs.length)
+      lines.push((afterPeek ? "EV per unit (the dealer has no blackjack): " : "EV per unit, from the deal: ") + evs.join("   "));
     return lines.join("\n");
   }
 

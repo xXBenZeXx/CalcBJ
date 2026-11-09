@@ -97,6 +97,22 @@ namespace CalcBJ.App
             return StrategyBuilder.TcEquivalent(cs, r, metricValue) / Factor(cs);
         }
 
+        /// <summary>
+        /// The Hi-Lo true count whose preset bet a count row gets: the row's typical exact count (Representative),
+        /// converted to Hi-Lo and rounded the way the count rounds its own true count. Mapping the row's lower edge instead
+        /// made counts whose Factor isn't 1 (Wong Halves, Silver Fox, Zen ...) bet a row late. Hi-Lo rows are unchanged.
+        /// </summary>
+        public static double PresetHiLo(CountSystem cs, Rules r, int metricValue)
+        {
+            double hl = StrategyBuilder.TcEquivalent(cs, r, StrategyBuilder.Representative(cs, metricValue)) / Factor(cs);
+            if (cs.Metric == CountMetric.TrueCount)
+            {
+                if (cs.Rounding == TcRounding.Round) return Math.Round(hl, MidpointRounding.AwayFromZero);
+                if (cs.Rounding == TcRounding.Truncate) return (int)(hl + (hl >= 0 ? 1e-9 : -1e-9));
+            }
+            return hl;   // RampPresets.UnitsAt floors it
+        }
+
         /// <summary>Count value (in the count's own metric) that corresponds to a Hi-Lo true count.</summary>
         public static double MetricFor(CountSystem cs, Rules r, double hiLo)
         {
@@ -140,6 +156,7 @@ namespace CalcBJ.App
         PlayTable table;
         AnalysisResult result;
         string resultKey;
+        SimData resultSim;
 
         // Finished (or interrupted) simulations by configuration key, most recent last.
         readonly Dictionary<string, SimData> simCache = new Dictionary<string, SimData>();
@@ -199,6 +216,21 @@ namespace CalcBJ.App
         public string SimKey { get { return SimKeyOf(Rules, Count, Strategy, Spots); } }
         public bool SimStale { get { return Sim != null && Sim.Key != SimKey; } }
 
+        /// <summary>
+        /// True when the simulation shown was run with another count (or the same count converted differently): its
+        /// count values then aren't the ones the bet ramp is set for, so the ramp can't be evaluated on it.
+        /// </summary>
+        public bool SimOfAnotherCount
+        {
+            get
+            {
+                if (Sim == null || Sim.Key == null) return false;
+                // The key is rules # count # strategy # spots; the rules part has no '#'.
+                int at = Sim.Key.IndexOf('#');
+                return at < 0 || !Sim.Key.Substring(at + 1).StartsWith(Count.Key() + "#", StringComparison.Ordinal);
+            }
+        }
+
         public PlayTable Table
         {
             get
@@ -215,10 +247,12 @@ namespace CalcBJ.App
             {
                 if (Sim == null) return null;
                 string k = Sim.Rounds + "|" + Sim.Key + "|" + RampKey() + "|" + Unit + "|" + RoundsPerHour + "|" + Bankroll;
-                if (result == null || resultKey != k)
+                // Another simulation of the same settings with as many rounds has the same key: compare the data too.
+                if (result == null || resultKey != k || !ReferenceEquals(resultSim, Sim))
                 {
-                    result = Analysis.Evaluate(Sim, Ramp, Unit, RoundsPerHour, Bankroll);
+                    result = SimOfAnotherCount ? new AnalysisResult() : Analysis.Evaluate(Sim, Ramp, Unit, RoundsPerHour, Bankroll);
                     resultKey = k;
+                    resultSim = Sim;
                 }
                 return result;
             }
@@ -301,21 +335,25 @@ namespace CalcBJ.App
             // Running counts of level-2 systems span many rows (Uston SS with 8 decks needs about 110 to reach the
             // equivalent of Hi-Lo +8, where the presets reach their top bet).
             if (hi - lo > MaxRampRows - 1) { lo = (int)Math.Floor(CountScale.MetricFor(cs, r, -2)); hi = lo + MaxRampRows - 1; }
-            if (hi <= lo) hi = lo + 1;
-            lo = Math.Max(PlayTable.BinMin, lo); hi = Math.Min(PlayTable.BinMax, hi);
+            // Inside the count bins, and at least two rows: an extreme starting count can put the whole range beyond them.
+            lo = Math.Max(PlayTable.BinMin, Math.Min(PlayTable.BinMax - 1, lo));
+            hi = Math.Max(lo + 1, Math.Min(PlayTable.BinMax, hi));
         }
 
         /// <summary>Index range for a count: the equivalent of Hi-Lo -10 to +10.</summary>
         public static void IndexRangeFor(CountSystem cs, Rules r, out int lo, out int hi)
         {
-            lo = Math.Max(PlayTable.BinMin, (int)Math.Floor(CountScale.MetricFor(cs, r, -10)));
-            hi = Math.Min(PlayTable.BinMax, (int)Math.Ceiling(CountScale.MetricFor(cs, r, 10)));
+            lo = Math.Max(PlayTable.BinMin, Math.Min(PlayTable.BinMax, (int)Math.Floor(CountScale.MetricFor(cs, r, -10))));
+            hi = Math.Max(PlayTable.BinMin, Math.Min(PlayTable.BinMax, (int)Math.Ceiling(CountScale.MetricFor(cs, r, 10))));
         }
 
-        /// <summary>Whether a count value means a different true count when the number of decks changes.</summary>
+        /// <summary>
+        /// Whether a count value means a different true count when the number of decks (or the penetration) changes:
+        /// running counts, unbalanced counts, and any count that starts at something other than 0.
+        /// </summary>
         public static bool DependsOnDecks(CountSystem cs)
         {
-            return cs.Metric == CountMetric.RunningCount || !cs.IsBalanced;
+            return cs.Metric == CountMetric.RunningCount || !cs.IsBalanced || cs.IrcBase != 0 || cs.IrcPerDeck != 0;
         }
 
         /// <summary>
@@ -324,22 +362,33 @@ namespace CalcBJ.App
         /// </summary>
         public static BetRamp RampForRules(CountSystem cs, Rules from, Rules to, BetRamp ramp, int preset)
         {
+            return RampFor(cs, from, cs, to, ramp, preset);
+        }
+
+        /// <summary>
+        /// The ramp after the count or the rules changed so that a count value means another true count (decks, starting
+        /// count, conversion, another count altogether): a preset is applied again over the new range; a custom ramp is
+        /// carried over row by row, each new row taking the bet of the old row with the nearest Hi-Lo equivalent.
+        /// </summary>
+        public static BetRamp RampFor(CountSystem csFrom, Rules from, CountSystem cs, Rules to, BetRamp ramp, int preset)
+        {
             int lo, hi;
             RampRangeFor(cs, to, out lo, out hi);
             var r = BetRamp.Create(lo, hi, 1);
+            bool custom = !(preset >= 0 && preset < RampPresets.Custom) && ramp != null && ramp.Rows >= 1;
             for (int v = lo; v <= hi; v++)
             {
-                double hl = CountScale.HiLoEquivalent(cs, to, v);
-                if (preset >= 0 && preset < RampPresets.Custom)
+                if (!custom)
                 {
-                    r.Units[v - lo] = RampPresets.UnitsAt(preset, hl);
+                    r.Units[v - lo] = RampPresets.UnitsAt(preset >= 0 && preset < RampPresets.Custom ? preset : 3, CountScale.PresetHiLo(cs, to, v));
                     continue;
                 }
+                double hl = CountScale.HiLoEquivalent(cs, to, v);
                 int best = ramp.Min;
                 double bestD = double.MaxValue;
                 for (int w = ramp.Min; w <= ramp.Max; w++)
                 {
-                    double d = Math.Abs(CountScale.HiLoEquivalent(cs, from, w) - hl);
+                    double d = Math.Abs(CountScale.HiLoEquivalent(csFrom, from, w) - hl);
                     if (d < bestD) { bestD = d; best = w; }
                 }
                 r.Units[v - lo] = ramp.UnitsAt(best);
@@ -352,7 +401,16 @@ namespace CalcBJ.App
         {
             int lo, hi;
             RampRangeFor(Count, Rules, out lo, out hi);
-            Ramp = Ramp == null ? BetRamp.Create(lo, hi, 1) : Ramp.Resize(lo, hi);
+            Ramp = Ramp == null || Ramp.Rows < 1 ? BetRamp.Create(lo, hi, 1) : Ramp.Resize(lo, hi);
+        }
+
+        /// <summary>
+        /// Moves the ramp to the current count and rules from the ones it was set for (see RampFor): a preset is applied
+        /// again, a custom ramp keeps its bets at the same true counts.
+        /// </summary>
+        public void CarryRamp(CountSystem oldCount, Rules oldRules)
+        {
+            Ramp = RampFor(oldCount, oldRules, Count, Rules, Ramp, RampPreset);
         }
 
         public void ResetIndexRange()
@@ -369,8 +427,7 @@ namespace CalcBJ.App
             RampPreset = preset;
             for (int v = Ramp.Min; v <= Ramp.Max; v++)
             {
-                double hl = CountScale.HiLoEquivalent(Count, Rules, v);
-                Ramp.Units[v - Ramp.Min] = RampPresets.UnitsAt(preset, hl);
+                Ramp.Units[v - Ramp.Min] = RampPresets.UnitsAt(preset, CountScale.PresetHiLo(Count, Rules, v));
                 Ramp.Hands[v - Ramp.Min] = 1;
             }
         }
@@ -412,6 +469,12 @@ namespace CalcBJ.App
             e.Spots = Spots; e.Unit = Unit; e.RoundsPerHour = RoundsPerHour; e.Bankroll = Bankroll;
             e.HouseEdge = -Table.BasicResult.PlayerEV;
             e.Stale = SimStale;
+            if (SimStale && Sim.RulesText != null)
+            {
+                // The results are of the last simulation, not of the settings as they are now: say what was simulated.
+                e.Rules = Sim.RulesText; e.Count = Sim.CountText; e.Strategy = Sim.StrategyText;
+                if (!double.IsNaN(Sim.BasicEV)) e.HouseEdge = -Sim.BasicEV;
+            }
             if (a != null && a.Valid)
             {
                 e.WinPerHour = a.WinPerHour; e.SdPerHour = a.SdPerHour; e.WinPer100 = a.WinPer100; e.SdPer100 = a.SdPer100;
@@ -456,17 +519,30 @@ namespace CalcBJ.App
             var ser = new XmlSerializer(typeof(ScenarioFile));
             ScenarioFile f;
             using (var r = new StreamReader(path)) f = (ScenarioFile)ser.Deserialize(r);
-            if (f.Rules != null) Rules = f.Rules;
-            if (f.Count != null && f.Count.Tags != null && f.Count.Tags.Length == 10) { Count = f.Count; CountSystem.UpgradeSaved(Count); }
+            if (f.Rules != null) { Rules = f.Rules; Rules.Sanitize(); }
+            CountSystem savedCount = null;
+            if (f.Count != null && f.Count.Tags != null && f.Count.Tags.Length == 10)
+            {
+                Count = f.Count;
+                var asSaved = Count.Clone();
+                if (CountSystem.UpgradeSaved(Count)) savedCount = asSaved;
+            }
             if (f.Strategy != null) { Strategy = f.Strategy; if (Strategy.Overrides == null) Strategy.Overrides = new List<IndexOverride>(); }
             Spots = Math.Max(1, Math.Min(7, f.Spots));
             RoundsPerHour = f.RoundsPerHour > 0 ? f.RoundsPerHour : DefaultRoundsPerHour(Spots);
             AutoRoundsPerHour = f.AutoRoundsPerHour;
             Unit = f.Unit > 0 ? f.Unit : 25;
             Bankroll = f.Bankroll > 0 ? f.Bankroll : 25000;
-            if (f.Ramp != null && f.Ramp.Units != null && f.Ramp.Hands != null && f.Ramp.Units.Length == f.Ramp.Max - f.Ramp.Min + 1) Ramp = f.Ramp;
-            else ResetRampRange();
+            if (f.Ramp != null && f.Ramp.Units != null && f.Ramp.Hands != null && f.Ramp.Units.Length >= 1
+                && f.Ramp.Units.Length == f.Ramp.Max - f.Ramp.Min + 1 && f.Ramp.Hands.Length == f.Ramp.Units.Length) Ramp = f.Ramp;
+            else { Ramp = null; ResetRampRange(); }
             RampPreset = f.RampPreset;
+            if (savedCount != null)
+            {
+                // The count was corrected on the way in: its ramp and index range were set for the old tags.
+                CarryRamp(savedCount, Rules);
+                ResetIndexRange();
+            }
             if (f.SimRounds > 0) SimRounds = f.SimRounds;
             if (f.Threads > 0) Threads = f.Threads;
             // AutoRun is an app preference, not part of a scenario: opening a file never turns automatic runs on.

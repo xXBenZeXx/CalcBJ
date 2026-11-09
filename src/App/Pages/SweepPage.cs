@@ -103,7 +103,10 @@ namespace CalcBJ.App
             int p = param.SelectedIndex;
             double a = (double)from.Value, b = (double)to.Value, st = (double)step.Value;
             if (st <= 0 || b < a) { status.Text = "Check the range."; return; }
-            if (p == 4 && State.Sim == null) { status.Text = "Run a simulation first."; return; }
+            if (p == 4 && (State.Sim == null || State.SimOfAnotherCount)) { status.Text = "Run a simulation first."; return; }
+            if (p == 4) note.Text = State.SimStale
+                ? "⚠  The settings changed since the last simulation: these points are for the settings it was run with."
+                : "Uses the current simulation; for each maximum bet the SCORE-optimal ramp (min 1 unit, whole units) is found.";
             var values = new List<double>();
             for (double v = a; v <= b + 1e-9 && values.Count < 60; v += st) values.Add(Math.Round(v, 4));
             long n = RoundOptions[Math.Max(0, rounds.SelectedIndex)];
@@ -145,7 +148,18 @@ namespace CalcBJ.App
                             var ramp2 = ramp;
                             int sp = spots;
                             double rph2 = rph;
-                            if (p == 0) { r2.Penetration = v / 100.0; pt.Label = v.ToString("0.#", CultureInfo.InvariantCulture) + "%"; }
+                            if (p == 0)
+                            {
+                                double pv = Math.Max(0, Math.Min(100, v));
+                                r2.Penetration = pv / 100.0;
+                                // The cut card can't go deeper than the cards the round in progress may need.
+                                double dealt = 100.0 * r2.CutCard(sp) / r2.TotalCards;
+                                pt.Label = pv.ToString("0.#", CultureInfo.InvariantCulture) + "%"
+                                    + (pv > 0 && dealt < pv - 0.5 ? " (cut at " + dealt.ToString("0.#", CultureInfo.InvariantCulture) + "%)" : "");
+                                // As on the Game page: a preset ramp of a running count follows the penetration.
+                                if (AppState.DependsOnDecks(cs) && preset >= 0 && preset < RampPresets.Custom)
+                                    ramp2 = AppState.RampForRules(cs, rules, r2, ramp, preset);
+                            }
                             else if (p == 1)
                             {
                                 r2.Decks = Math.Max(1, Math.Min(8, (int)v));
@@ -216,7 +230,7 @@ namespace CalcBJ.App
             var r = p.R;
             if (r == null || !r.Valid) grid.Rows.Add(p.Label, "—", "—", "—", "—", "—");
             else grid.Rows.Add(p.Label, Theme.Money(r.WinPerHour), Theme.SignedPct(r.EdgePct / 100, 2), Theme.F(r.Score, "0.0"),
-                r.EV > 0 ? Theme.F(r.HoursN0, "#,0") : "—", Theme.Pct(r.ROR, 1));
+                r.EV > 0 ? Theme.F(r.HoursN0, "#,0") : "—", Theme.Ror(r.ROR));
             GridUtil.FitHeight(grid, 40);
             status.Text = "Point " + grid.Rows.Count + " of " + total + " done.";
             Draw();

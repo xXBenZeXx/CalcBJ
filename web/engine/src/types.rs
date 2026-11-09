@@ -1,6 +1,6 @@
 //! Rules, count systems and strategy settings (C#: Types.cs).
 
-use crate::num::{dmax, dotnet_bool, dotnet_fixed, dotnet_general};
+use crate::num::{dmax, dmin, dotnet_bool, dotnet_fixed, dotnet_general};
 
 macro_rules! named_enum {
     ($(#[$meta:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
@@ -59,6 +59,9 @@ named_enum! {
         Surrender = "Surrender", NoSurrender = "NoSurrender", Insure = "Insure", NoInsure = "NoInsure",
     }
 }
+
+/// Most hands a pair can be split to, in the analysis and in the simulator.
+pub const MAX_SPLIT_LIMIT: i32 = 4;
 
 /// Table rules. Ranks are 1..=10 everywhere in the engine (1 = ace, 10 = any ten-value card).
 #[derive(Clone, Debug, PartialEq)]
@@ -138,6 +141,22 @@ impl Rules {
             cut = 10.min(n - 1);
         }
         cut
+    }
+
+    /// Brings values read from a file into the ranges the program works with: 1 to 8 decks, split to at most 4 hands,
+    /// a blackjack payout in twentieths of a unit (what the simulator pays in) and a penetration from 0 to 1 (C#:
+    /// Rules.Sanitize).
+    pub fn sanitize(&mut self) {
+        self.decks = self.decks.clamp(1, 8);
+        self.max_split_hands = self.max_split_hands.clamp(1, MAX_SPLIT_LIMIT);
+        if self.blackjack_pays.is_nan() {
+            self.blackjack_pays = 1.5;
+        }
+        self.blackjack_pays = (dmax(0.0, dmin(10.0, self.blackjack_pays)) * 20.0).round_ties_even() / 20.0;
+        if self.penetration.is_nan() {
+            self.penetration = 0.75;
+        }
+        self.penetration = dmax(0.0, dmin(1.0, self.penetration));
     }
 
     pub fn payout_text(p: f64) -> String {

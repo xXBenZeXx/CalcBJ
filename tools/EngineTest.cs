@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.Threading;
+using System.Threading.Tasks;
 using CalcBJ.Engine;
 
 static class EngineTest
@@ -29,6 +30,60 @@ static class EngineTest
     {
         double ev = HE(label, r) * 100;
         Check(Math.Abs(ev - expectedPct) <= 0.03, string.Format(CultureInfo.InvariantCulture, "{0}: {1:0.000}% vs published {2:0.00}%", label, ev, expectedPct));
+    }
+
+    /// <summary>A basic-strategy chart code against the exact play (CAEngine.BasicStrategy; also the published chart).</summary>
+    static void Play(string label, Rules r, char kind, int total, int up, string expect)
+    {
+        var sc = new StrategyConfig(); sc.Mode = IndexMode.BasicOnly;
+        var pt = StrategyBuilder.Build(r, new CountSystem(), sc);
+        int cell = kind == 'P' ? PlayTable.PairCell(total, up) : (kind == 'S' ? PlayTable.SoftCell(total, up) : PlayTable.HardCell(total, up));
+        string got = StrategyBuilder.ActionCode(pt.Basic[cell], kind == 'P');
+        Console.WriteLine("{0,-26} {1}{2,-2} v {3,-2} {4,-3} (exact {5})", label, kind, total, up, got, expect);
+        Check(got == expect, label + " " + kind + total + " v " + up + ": " + got + ", exact play " + expect);
+    }
+
+    /// <summary>
+    /// Basic strategy must be the best there is. Every decision of every chart cell (stand or hit, double, surrender,
+    /// split) is changed in turn and the changed strategy's exact off-the-top expectation worked out: none may gain
+    /// more than 0.0001%. A wrong cell fails this even when it costs 0.001%, which the published house edges and the
+    /// simulations can't see. Two known leftovers stay below the limit (found in 77 of 600 rule sets, nothing else in
+    /// any of them): with two decks and DAS, doubling soft 17 v 2 gains up to 0.00006%, because the hands made by
+    /// splitting sixes use that cell too; with three decks and surrender, hitting 16 v 9 gains 0.00007%, because the
+    /// cell's average still counts the pair of eights, which is split.
+    /// </summary>
+    static void BestPlay(string label, Rules r)
+    {
+        var sw = Stopwatch.StartNew();
+        ExactAdjust adj; double offTop;
+        CAResult basic = CAEngine.BasicFor(r, out adj, out offTop);
+        byte[] bits = { Flag.Stand, Flag.Double, Flag.Surrender, Flag.Split };
+        string[] names = { "stand/hit", "double", "surrender", "split" };
+        var gains = new double[PlayTable.CellsPerBin * 4];
+        Parallel.For(0, gains.Length, () => new CAEngine(r), (i, state, eng) =>
+        {
+            int cell = i / 4; byte bit = bits[i % 4];
+            // The split bit belongs to the pair cells, and only where the rules let the player split.
+            if (bit == Flag.Split && (cell < PlayTable.PairCell(1, 1) || r.MaxSplitHands < 2)) return eng;
+            var alt = new CAResult();
+            alt.Flags = (byte[])basic.Flags.Clone();
+            alt.Flags[cell] ^= bit;
+            alt.Insure = basic.Insure; alt.InsuranceEV = basic.InsuranceEV;
+            gains[i] = eng.ExactOffTop(alt) - offTop;
+            return eng;
+        }, eng => { });
+        int changed = 0, at = 0;
+        for (int i = 0; i < gains.Length; i++)
+        {
+            if (gains[i] != 0) changed++;
+            if (gains[i] > gains[at]) at = i;
+        }
+        int c = at / 4, u = c % 10 + 1;
+        string where = (c >= 440 ? "pair of " + ((c - 440) / 10 + 1) : (c >= 220 ? "soft " + (c - 220) / 10 : "hard " + c / 10)) + " v " + u + ", " + names[at % 4];
+        Console.WriteLine("{0,-28} player EV {1,8:0.0000}%   {2} changed decisions tried, best gain {3:0.0000000}%{4}   ({5} ms)",
+            label, offTop * 100, changed, Math.Max(0, gains[at]) * 100, gains[at] > 0 ? " (" + where + ")" : "", sw.ElapsedMilliseconds);
+        Check(changed > 300, label + ": only " + changed + " changed decisions had an effect");
+        Check(gains[at] <= 1e-6, string.Format(CultureInfo.InvariantCulture, "{0}: {1} gains {2:0.000000}%", label, where, gains[at] * 100));
     }
 
     static Rules R(int decks, bool h17, bool das, SurrenderRule sur, int maxSplit, bool rsa)
@@ -61,6 +116,41 @@ static class EngineTest
             HE("6D S17 DAS ES", es);
             for (int u = 1; u <= 10; u++) Console.Write("dag{0}={1} ", u, DealerDag_Count(u));
             Console.WriteLine();
+
+            // Plays the analysis's fixed draw odds got wrong with one or two decks, and 16 v T with surrender (hands of
+            // three or more cards stand). The exact plays come from an independent exact calculation.
+            Play("2D S17 DAS", R(2, false, true, SurrenderRule.None, 4, false), 'H', 11, 1, "D");
+            Play("1D S17 DAS", R(1, false, true, SurrenderRule.None, 4, false), 'S', 13, 4, "D");
+            Play("1D S17 DAS", R(1, false, true, SurrenderRule.None, 4, false), 'S', 19, 6, "Ds");
+            Play("1D S17 DAS LS", R(1, false, true, SurrenderRule.Late, 4, false), 'H', 16, 1, "R");
+            Play("2D H17 DAS", R(2, true, true, SurrenderRule.None, 4, false), 'S', 18, 2, "Ds");
+            Play("2D S17 DAS", R(2, false, true, SurrenderRule.None, 4, false), 'P', 6, 7, "P");
+            Play("2D S17 DAS", R(2, false, true, SurrenderRule.None, 4, false), 'P', 7, 8, "P");
+            Play("1D H17 DAS", R(1, true, true, SurrenderRule.None, 4, false), 'P', 9, 1, "P");
+            Play("1D H17 noDAS SP2", R(1, true, false, SurrenderRule.None, 2, false), 'P', 2, 3, "P");
+            Play("1D H17 DAS LS", R(1, true, true, SurrenderRule.Late, 4, false), 'H', 16, 10, "Rs");
+            Play("6D H17 DAS LS", R(6, true, true, SurrenderRule.Late, 4, false), 'H', 16, 10, "Rs");
+            Play("6D S17 DAS ES", R(6, false, true, SurrenderRule.Early, 4, false), 'H', 16, 10, "Rs");
+            Play("6D H17 DAS noSurr", R(6, true, true, SurrenderRule.None, 4, false), 'H', 16, 10, "H");
+        }
+        if (mode == "best" || mode == "all")
+        {
+            BestPlay("6D H17 DAS LS", R(6, true, true, SurrenderRule.Late, 4, false));
+            BestPlay("6D S17 DAS noSurr", R(6, false, true, SurrenderRule.None, 4, false));
+            BestPlay("2D H17 DAS noSurr", R(2, true, true, SurrenderRule.None, 4, false));
+            BestPlay("2D S17 DAS noSurr", R(2, false, true, SurrenderRule.None, 4, false));
+            BestPlay("1D S17 noDAS SP2", R(1, false, false, SurrenderRule.None, 2, false));
+            BestPlay("1D H17 DAS LS", R(1, true, true, SurrenderRule.Late, 4, false));
+            BestPlay("1D S17 DAS LS", R(1, false, true, SurrenderRule.Late, 4, false));
+            var bestEnhc = R(8, false, true, SurrenderRule.None, 4, false); bestEnhc.HoleCard = HoleCardRule.ENHC;
+            BestPlay("8D S17 DAS ENHC", bestEnhc);
+            var bestEs = R(6, false, true, SurrenderRule.Early, 3, true); bestEs.HitSplitAces = true;
+            BestPlay("6D S17 DAS ES RSA HSA SP3", bestEs);
+            var bestD10 = R(2, false, false, SurrenderRule.None, 4, false); bestD10.DoubleOn = DoubleRule.TenToEleven; bestD10.BlackjackPays = 1.2;
+            BestPlay("2D S17 noDAS D10 6:5", bestD10);
+            var bestObo = R(4, true, true, SurrenderRule.Late, 4, false); bestObo.HoleCard = HoleCardRule.ENHC_OBO;
+            BestPlay("4D H17 DAS LS OBO", bestObo);
+            BestPlay("3D S17 DAS no splitting", R(3, false, true, SurrenderRule.None, 1, false));
         }
         if (mode == "idx" || mode == "all")
         {

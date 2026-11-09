@@ -93,6 +93,11 @@ class Stopwatch {
   ms(): number {
     return this.total + (this.since === null ? 0 : performance.now() - this.since);
   }
+
+  /** Takes back the time beyond `ms`. */
+  limit(ms: number): void {
+    this.total -= Math.max(0, this.ms() - ms);
+  }
 }
 
 /** The run in progress (there is one at a time). */
@@ -113,6 +118,12 @@ interface Run {
   stopping: boolean;
   paused: boolean;
   clock: Stopwatch;
+  /** Running time when each worker got the chunk it is working on. */
+  since: number[];
+  /** The longest a chunk has taken so far. */
+  chunkMs: number;
+  /** While paused: the running time by which the chunks in progress were due (see `time`). */
+  dueMs: number;
   /** Running time at the last checkpoint. */
   checkpointMs: number;
   /** Running time when the last chunk came in: the time the rounds so far took. */
@@ -180,6 +191,9 @@ class Simulation {
       // A run that starts in the background (the next point of a sweep) waits until the app is back.
       paused: PAUSE_WHEN_HIDDEN && document.visibilityState === "hidden",
       clock: new Stopwatch(),
+      since: new Array<number>(threads).fill(0),
+      chunkMs: 0,
+      dueMs: 0,
       checkpointMs: 0,
       lastTallyMs: 0,
       updateTimer: 0,
@@ -220,7 +234,8 @@ class Simulation {
     } else if (m.type === "tally") {
       for (let k = 0; k < TALLY_LEN; k++) r.tally[k] += m.tally[k];
       this.done += m.rounds;
-      r.lastTallyMs = r.clock.ms();
+      r.lastTallyMs = this.time(r);
+      if (!r.paused) r.chunkMs = Math.max(r.chunkMs, r.lastTallyMs - r.since[i]);
       this.seconds = r.lastTallyMs / 1000;
       if (r.lastTallyMs - r.checkpointMs >= CHECKPOINT_MS) this.checkpoint(r);
       r.updateTimer ||= setTimeout(() => {
@@ -239,6 +254,7 @@ class Simulation {
       const rounds = Math.min(CHUNK, r.req.rounds - r.claimed);
       r.claimed += rounds;
       r.states[i] = "running";
+      r.since[i] = r.clock.ms();
       this.pool[i]?.postMessage({ type: "run", job: r.job, rounds } satisfies WorkerRequest);
     } else {
       r.states[i] = "idle";
@@ -268,6 +284,11 @@ class Simulation {
   private settle(r: Run): void {
     if (this.current !== r) return;
     const busy = r.states.some((s) => s === "preparing" || s === "running");
+    if (r.paused && !busy) {
+      // In the background the clock ran on for the chunks in progress: they are all in now.
+      this.time(r);
+      r.clock.pause();
+    }
     if (!r.stopping && r.claimed < r.req.rounds) {
       // Paused in the background with rounds still to do: once every worker is idle, all of their chunks are in.
       if (!busy) this.checkpoint(r);
@@ -304,7 +325,7 @@ class Simulation {
   }
 
   /** Ends the run; `ms` is its running time (until now unless given). */
-  private finish(r: Run, ms = r.clock.ms()): void {
+  private finish(r: Run, ms = this.time(r)): void {
     clearTimeout(r.updateTimer);
     clearTimeout(r.drainTimer);
     this.seconds = ms / 1000;
@@ -316,7 +337,7 @@ class Simulation {
   /** Passes on the results so far to be kept, in case the app is closed or killed before the run ends. */
   private checkpoint(r: Run): void {
     if (this.current !== r) return;
-    r.checkpointMs = r.clock.ms();
+    r.checkpointMs = this.time(r);
     if (this.done === 0) return;
     this.seconds = r.checkpointMs / 1000;
     r.listener(this.results(r), "checkpoint");
@@ -338,11 +359,18 @@ class Simulation {
       r.drainTimer = 0;
       if (PAUSE_WHEN_HIDDEN && !r.paused) {
         r.paused = true;
-        r.clock.pause();
+        // No more chunks are handed out. Those in progress are due once each has run as long as the longest so far.
+        r.dueMs = r.clock.ms();
+        r.states.forEach((s, i) => {
+          if (s === "running") r.dueMs = Math.max(r.dueMs, r.since[i] + r.chunkMs);
+        });
+        this.settle(r);
       }
       return;
     }
     if (r.paused) {
+      // Chunks still in progress were held up while the app was suspended: that time doesn't count.
+      this.time(r);
       r.paused = false;
       r.clock.start();
       r.states.forEach((s, i) => {
@@ -350,6 +378,17 @@ class Simulation {
       });
     }
     this.settle(r);
+  }
+
+  /**
+   * The run's time so far. A phone app in the background hands out no more chunks, but those in progress still finish
+   * and their rounds count, so the clock runs on until the last of them is in. It stops at the latest when they were
+   * due (each taking as long as the longest chunk so far): beyond that, the system had suspended the app. Before the
+   * first chunk of a run is in there is no such measure, and the clock stops with the app.
+   */
+  private time(r: Run): number {
+    if (r.paused) r.clock.limit(r.dueMs);
+    return r.clock.ms();
   }
 
   private results(r: Run): SimData | null {

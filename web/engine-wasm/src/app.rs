@@ -1,10 +1,9 @@
 //! The C# app's helpers around the engine (AppState.cs, CountPage.cs): count scale, default ramp and index ranges,
 //! ramp presets, and the betting and insurance correlations shown on the count page.
 
-use calcbj_engine::strategy::{BIN_MAX, BIN_MIN, mid_depth_decks, tc_equivalent};
+use calcbj_engine::strategy::{BIN_MAX, BIN_MIN, mid_depth_decks, representative, tc_equivalent};
 use calcbj_engine::*;
 use serde_json::{Value, json};
-use std::cell::RefCell;
 
 /// The "(custom ramp)" entry after the presets.
 pub const CUSTOM_PRESET: i32 = 8;
@@ -37,6 +36,22 @@ pub fn hi_lo_equivalent(cs: &CountSystem, r: &Rules, metric_value: i32) -> f64 {
     tc_equivalent(cs, r, metric_value as f64) / factor(cs)
 }
 
+/// The Hi-Lo true count whose preset bet a count row gets: the row's typical exact count (`representative`), converted
+/// to Hi-Lo and rounded the way the count rounds its own true count (C#: CountScale.PresetHiLo). Mapping the row's lower
+/// edge instead made counts whose factor isn't 1 (Wong Halves, Silver Fox, Zen ...) bet a row late. Hi-Lo rows are
+/// unchanged.
+pub fn preset_hi_lo(cs: &CountSystem, r: &Rules, metric_value: i32) -> f64 {
+    let hl = tc_equivalent(cs, r, representative(cs, metric_value)) / factor(cs);
+    if cs.metric == CountMetric::TrueCount {
+        match cs.rounding {
+            TcRounding::Round => return hl.round(),
+            TcRounding::Truncate => return ((hl + if hl >= 0.0 { 1e-9 } else { -1e-9 }) as i32) as f64,
+            TcRounding::Floor => {}
+        }
+    }
+    hl // preset_units floors it
+}
+
 /// Count value (in the count's own metric) that corresponds to a Hi-Lo true count.
 pub fn metric_for(cs: &CountSystem, r: &Rules, hi_lo: f64) -> f64 {
     let d_mid = mid_depth_decks(r);
@@ -56,13 +71,12 @@ pub fn reset_ramp_range(cs: &CountSystem, r: &Rules, old: Option<&BetRamp>) -> B
         lo = metric_for(cs, r, -2.0).floor() as i32;
         hi = lo + MAX_RAMP_ROWS - 1;
     }
-    if hi <= lo {
-        hi = lo + 1;
-    }
-    let (lo, hi) = (lo.max(BIN_MIN), hi.min(BIN_MAX));
+    // Inside the count bins, and at least two rows: an extreme starting count can put the whole range beyond them.
+    let lo = lo.clamp(BIN_MIN, BIN_MAX - 1);
+    let hi = hi.clamp(lo + 1, BIN_MAX);
     match old {
-        Some(o) => o.resize(lo, hi),
-        None => BetRamp::create(lo, hi, 1.0),
+        Some(o) if o.rows() >= 1 && o.units.len() == o.rows() && o.hands.len() == o.rows() => o.resize(lo, hi),
+        _ => BetRamp::create(lo, hi, 1.0),
     }
 }
 
@@ -70,7 +84,7 @@ pub fn reset_ramp_range(cs: &CountSystem, r: &Rules, old: Option<&BetRamp>) -> B
 pub fn index_range(cs: &CountSystem, r: &Rules) -> (i32, i32) {
     let lo = metric_for(cs, r, -10.0).floor() as i32;
     let hi = metric_for(cs, r, 10.0).ceil() as i32;
-    (lo.max(BIN_MIN), hi.min(BIN_MAX))
+    (lo.clamp(BIN_MIN, BIN_MAX), hi.clamp(BIN_MIN, BIN_MAX))
 }
 
 fn preset_units(preset: i32, hi_lo_tc: f64) -> f64 {
@@ -87,7 +101,7 @@ pub fn apply_preset(cs: &CountSystem, r: &Rules, ramp: &mut BetRamp, preset: i32
     let preset = if (0..CUSTOM_PRESET).contains(&preset) { preset } else { 3 };
     for v in ramp.min..=ramp.max {
         let i = (v - ramp.min) as usize;
-        ramp.units[i] = preset_units(preset, hi_lo_equivalent(cs, r, v));
+        ramp.units[i] = preset_units(preset, preset_hi_lo(cs, r, v));
         ramp.hands[i] = 1;
     }
     preset
@@ -97,17 +111,33 @@ pub fn apply_preset(cs: &CountSystem, r: &Rules, ramp: &mut BetRamp, preset: i32
 /// ramp is carried over row by row, each row taking the bet of the old row with the nearest Hi-Lo equivalent
 /// (C#: AppState.RampForRules).
 pub fn ramp_for_rules(cs: &CountSystem, from: &Rules, to: &Rules, ramp: &BetRamp, preset: i32) -> BetRamp {
+    ramp_for(cs, from, cs, to, ramp, preset)
+}
+
+/// The ramp after the count or the rules changed so that a count value means another true count (decks, starting
+/// count, conversion, another count altogether): a preset is applied again over the new range; a custom ramp is carried
+/// over row by row, each new row taking the bet of the old row with the nearest Hi-Lo equivalent (C#: AppState.RampFor).
+pub fn ramp_for(
+    cs_from: &CountSystem,
+    from: &Rules,
+    cs: &CountSystem,
+    to: &Rules,
+    ramp: &BetRamp,
+    preset: i32,
+) -> BetRamp {
     let mut r = reset_ramp_range(cs, to, None);
+    let custom = !(0..CUSTOM_PRESET).contains(&preset) && ramp.rows() >= 1 && ramp.units.len() == ramp.rows();
     for v in r.min..=r.max {
         let i = (v - r.min) as usize;
-        let hl = hi_lo_equivalent(cs, to, v);
-        if (0..CUSTOM_PRESET).contains(&preset) {
-            r.units[i] = preset_units(preset, hl);
+        if !custom {
+            let preset = if (0..CUSTOM_PRESET).contains(&preset) { preset } else { 3 };
+            r.units[i] = preset_units(preset, preset_hi_lo(cs, to, v));
             continue;
         }
+        let hl = hi_lo_equivalent(cs, to, v);
         let (mut best, mut best_d) = (ramp.min, f64::MAX);
         for w in ramp.min..=ramp.max {
-            let d = (hi_lo_equivalent(cs, from, w) - hl).abs();
+            let d = (hi_lo_equivalent(cs_from, from, w) - hl).abs();
             if d < best_d {
                 best_d = d;
                 best = w;
@@ -117,33 +147,6 @@ pub fn ramp_for_rules(cs: &CountSystem, from: &Rules, to: &Rules, ramp: &BetRamp
         r.hands[i] = ramp.hands_at(best);
     }
     r
-}
-
-thread_local! {
-    static EOR: RefCell<Option<(String, [f64; 11])>> = const { RefCell::new(None) };
-}
-
-/// Change in player expectation from removing one card of each rank (index 1..=10), cached per rule set.
-fn effects_of_removal(r: &Rules) -> [f64; 11] {
-    let key = r.key();
-    EOR.with_borrow_mut(|slot| {
-        if let Some((k, e)) = slot.as_ref()
-            && *k == key
-        {
-            return *e;
-        }
-        let mut engine = CaEngine::new(r);
-        let full = full_shoe(r.decks as f64);
-        let base = engine.evaluate(&full).player_ev;
-        let mut e = [0.0; 11];
-        for (k, slot) in e.iter_mut().enumerate().skip(1) {
-            let mut c = full;
-            c[k] -= 1.0;
-            *slot = engine.evaluate(&c).player_ev - base;
-        }
-        *slot = Some((key, e));
-        e
-    })
 }
 
 fn corr(x: &[f64; 20], y: &[f64; 20], w: &[f64; 20]) -> f64 {
@@ -165,14 +168,18 @@ fn corr(x: &[f64; 20], y: &[f64; 20], w: &[f64; 20]) -> f64 {
     if sxx > 0.0 && syy > 0.0 { sxy / (sxx * syy).sqrt() } else { 0.0 }
 }
 
-pub fn count_info(r: &Rules, cs: &CountSystem) -> Value {
+/// What the count page shows about a count.
+///
+/// `eor_rank` are the effects of removal by rank (`[1..=10]`) of basic strategy played unchanged, worked out exactly:
+/// [`effects_of_removal`], which takes about a second, so the app gets them from a worker and passes them in. Without
+/// them there is no betting correlation (null).
+pub fn count_info(r: &Rules, cs: &CountSystem, eor_rank: Option<&[f64; 11]>) -> Value {
     // Card by card (red and black separately), so counts with red tags such as Red Seven get their real tags.
-    let eor_rank = effects_of_removal(r);
     let (mut tags, mut eor, mut insurance, mut weight) = ([0.0; 20], [0.0; 20], [0.0; 20], [0.0; 20]);
     for code in 0..20 {
         let k = (code >> 1) + 1;
         tags[code] = cs.tag_of_code(code);
-        eor[code] = eor_rank[k];
+        eor[code] = eor_rank.map_or(0.0, |e| e[k]);
         weight[code] = if k == 10 { 2.0 } else { 0.5 };
         insurance[code] = if k == 10 { -9.0 / 4.0 } else { 1.0 };
     }
@@ -185,7 +192,24 @@ pub fn count_info(r: &Rules, cs: &CountSystem) -> Value {
         "tagText": cs.tag_text(),
         "key": cs.key(),
         "factor": factor(cs),
-        "bettingCorrelation": corr(&tags, &eor, &weight),
+        // A running count moves by its factor times the decks left for each Hi-Lo true count (here: at mid-shoe).
+        "runningPerHiLo": factor(cs) * mid_depth_decks(r),
+        "bettingCorrelation": eor_rank.map(|_| corr(&tags, &eor, &weight)),
         "insuranceCorrelation": corr(&tags, &insurance, &weight),
     })
+}
+
+/// The published Hi-Lo index numbers in this count's own scale (C#: CountPage.LoadPublished): unchanged for a count
+/// that reads like Hi-Lo (a balanced true count of the same spread, starting at 0); otherwise each one becomes the
+/// nearest value of the count that stands for the same true count.
+pub fn from_hi_lo(cs: &CountSystem, r: &Rules, values: &[f64]) -> Vec<f64> {
+    let as_published = cs.metric == CountMetric::TrueCount
+        && cs.is_balanced()
+        && cs.irc_base == 0.0
+        && cs.irc_per_deck == 0.0
+        && (factor(cs) - 1.0).abs() < 0.005;
+    values
+        .iter()
+        .map(|&v| if as_published { v } else { metric_for(cs, r, v).round().clamp(BIN_MIN as f64, BIN_MAX as f64) })
+        .collect()
 }

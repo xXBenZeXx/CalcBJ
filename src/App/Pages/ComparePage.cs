@@ -42,7 +42,7 @@ namespace CalcBJ.App
             new Metric("SCORE", e => Theme.F(e.Score, "0.00"), e => e.Score, true),
             new Metric("DI", e => Theme.F(e.DI, "0.00"), e => e.DI, true),
             new Metric("N0 (rounds / hours)", e => double.IsPositiveInfinity(e.N0) ? "never (losing game)" : Theme.F(e.N0, "#,0") + " / " + Theme.F(e.HoursN0, "#,0"), e => -e.N0, true),
-            new Metric("Risk of ruin", e => Theme.Pct(e.ROR, 2), e => -e.ROR, true),
+            new Metric("Risk of ruin", e => Theme.Ror(e.ROR), e => -e.ROR, true),
             new Metric("Bankroll for 5% ROR", e => Theme.Money0(e.Bankroll5), e => -e.Bankroll5, true),
             new Metric("Kelly-optimal unit", e => Theme.Money(e.KellyUnit), null, true),
             new Metric("Certainty equivalent / hour", e => Theme.Money(e.CEPerHour), e => e.CEPerHour, true),

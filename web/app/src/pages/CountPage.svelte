@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import Card from "../lib/components/Card.svelte";
   import Field from "../lib/components/Field.svelte";
   import NumberInput from "../lib/components/NumberInput.svelte";
@@ -6,8 +7,8 @@
   import { engine } from "../lib/engine/engine";
   import type { CountSystem, HandKind, IndexOverride, PlayKind, StrategyInfo } from "../lib/engine/types";
   import { parseNumber, signed, signedTrim, snapTag, trim } from "../lib/format";
-  import { app, presets } from "../lib/state.svelte";
-  import { INDEX_MODES, RANK_NAMES, isBalanced, metricPrefix } from "../lib/text";
+  import { CUSTOM_PRESET, app, presets } from "../lib/state.svelte";
+  import { INDEX_MODES, RANK_NAMES, metricPrefix } from "../lib/text";
 
   const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "T"];
   const UPCARDS = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "A"];
@@ -25,7 +26,29 @@
   const presetKeys = presets.map((p) => engine.countKey(p));
 
   let presetIndex = $derived(presets.findIndex((p) => p.name === app.count.name));
-  let info = $derived(engine.countInfo(app.rules, app.count));
+  // The effects of removal behind the betting correlation take about a second: they come from a worker, per rules.
+  let eor = $state.raw<number[] | null>(null);
+  let eorFailed = $state(false);
+  $effect(() => {
+    const rules = $state.snapshot(app.rules);
+    const known = engine.knownEffects(rules);
+    eor = known;
+    eorFailed = false;
+    if (known) return;
+    let current = true;
+    engine.effectsOfRemoval(rules).then(
+      (e) => {
+        if (current) eor = e;
+      },
+      () => {
+        if (current) eorFailed = true;
+      },
+    );
+    return () => {
+      current = false;
+    };
+  });
+  let info = $derived(engine.countInfo(app.rules, app.count, eor));
 
   // ---------------- counting system ----------------
 
@@ -34,8 +57,9 @@
     const p = structuredClone(presets[i]);
     p.deckEst = app.count.deckEst;
     p.rounding = app.count.rounding;
+    const old = $state.snapshot(app.count);
     app.count = p;
-    app.resetRanges();
+    app.countChanged(old);
   }
 
   /** New tags: the system takes the name of a matching preset, otherwise it becomes "Custom". */
@@ -44,8 +68,9 @@
     const same = key === engine.countKey(app.count);
     const match = presetKeys.indexOf(key);
     cs.name = match >= 0 ? presets[match].name : same ? app.count.name : "Custom";
+    const old = $state.snapshot(app.count);
     app.count = cs;
-    if (!same) app.resetRanges();
+    if (!same) app.countChanged(old);
   }
 
   function setTag(i: number, red: boolean, v: number) {
@@ -65,13 +90,17 @@
     replaceCount(cs);
   }
 
-  /** True-count settings; a different metric (or an unbalanced count) moves the ramp rows and index range. */
+  /**
+   * True-count settings. Another metric or starting count makes count values mean other true counts: the ramp moves
+   * with them (a preset is applied again, a custom ramp keeps its bets at the same true counts) and the index range is
+   * set anew. Rounding decides which true counts a row stands for, so a preset is applied again; a custom ramp stays.
+   */
   function setConversion(change: Partial<CountSystem>) {
-    const oldMetric = app.count.metric;
+    const old = $state.snapshot(app.count);
     Object.assign(app.count, change);
-    if (app.count.metric !== oldMetric || app.count.metric === "RunningCount" || !isBalanced(app.count)) {
-      app.resetRanges();
-    }
+    const now = app.count;
+    if (now.metric !== old.metric || now.ircBase !== old.ircBase || now.ircPerDeck !== old.ircPerDeck) app.countChanged(old);
+    else if (now.rounding !== old.rounding && app.rampPreset < CUSTOM_PRESET) app.applyRampPreset(app.rampPreset);
   }
 
   let metricNote = $derived.by(() => {
@@ -85,7 +114,8 @@
       HalfDeck: "to the nearest ½ deck",
       FullDeck: "to the nearest deck",
     }[app.count.deckEst];
-    return `True count = running count ÷ estimated decks remaining (unseen cards, ${decks}), then ${app.count.rounding.toLowerCase()}ed to a whole number.`;
+    const rounded = { Floor: "floored", Truncate: "truncated", Round: "rounded" }[app.count.rounding];
+    return `True count = running count ÷ estimated decks remaining (unseen cards, ${decks}), then ${rounded} to a whole number.`;
   });
 
   // ---------------- custom index plays ----------------
@@ -131,6 +161,8 @@
       atOrAbove: r.when !== "≤",
       index: parseNumber(r.index) ?? 0,
     };
+    // An index that can't be read doesn't count as 0: the row is left out (as in the Windows app).
+    if (parseNumber(r.index) === null) return null;
     if (r.kind === "Pair") o.total = parseRank(r.total.split(",")[0]);
     else if (r.kind === "Soft") {
       const v = parseInt(r.total.trim().toUpperCase().replace(/A/g, "").replace(/,/g, ""), 10);
@@ -153,9 +185,20 @@
   }
 
   let rows = $state<Row[]>(app.strategy.overrides.map(toRow));
+  // The plays this table last wrote. Opening a scenario replaces the plays in use while this page stays on screen: the
+  // table then shows the file's plays instead of writing its old rows back with the next edit.
+  let written: IndexOverride[] | null = null;
+  $effect(() => {
+    const current = app.strategy.overrides;
+    untrack(() => {
+      if (written !== null && current !== written) rows = current.map(toRow);
+      written = current;
+    });
+  });
 
   function saveRows() {
     app.strategy.overrides = rows.map(toOverride).filter((o): o is IndexOverride => o !== null);
+    written = app.strategy.overrides;
   }
 
   function addRow(o: Partial<IndexOverride> = {}) {
@@ -197,16 +240,19 @@
       ["Hard", 15, 9, "Surrender", 2],
       ["Hard", 15, 1, "Surrender", 1],
     ];
-    for (const [kind, total, upcard, play, index] of published) {
-      let i = index;
+    const values = published.map(([kind, total, upcard, play, index]) => {
       if (app.rules.h17 && kind === "Hard" && upcard === 1) {
         // H17: 11 v A doubles from -1, 10 v A from +3, and 15 v A surrenders from -1.
-        if (total === 11 && play === "Double") i = -1;
-        else if (total === 10 && play === "Double") i = 3;
-        else if (total === 15 && play === "Surrender") i = -1;
+        if (total === 11 && play === "Double") return -1;
+        if (total === 10 && play === "Double") return 3;
+        if (total === 15 && play === "Surrender") return -1;
       }
-      addRow({ kind, total, upcard, play, index: i });
-    }
+      return index;
+    });
+    // The numbers are Hi-Lo true counts. For any other count (a running count, another level, a starting count) each
+    // one becomes the nearest value of that count that stands for the same true count.
+    const own = engine.fromHiLo(app.rules, app.count, values);
+    published.forEach(([kind, total, upcard, play], k) => addRow({ kind, total, upcard, play, index: own[k] }));
     saveRows();
   }
 
@@ -217,11 +263,11 @@
 
   let range = $derived.by(() => {
     const values: number[] = [];
-    for (let v = app.strategy.indexMin; v <= app.strategy.indexMax; v++) values.push(v);
+    const [lo, hi] = [Math.min(app.strategy.indexMin, app.strategy.indexMax), Math.max(app.strategy.indexMin, app.strategy.indexMax)];
+    for (let v = lo; v <= hi; v++) values.push(v);
     return values;
   });
   let at = $derived(viewAt !== null && range.includes(viewAt) ? viewAt : null);
-  let atLabel = $derived(at === null ? null : metricPrefix(app.count) + signed(at));
 
   let strategy = $derived.by((): StrategyInfo | string => {
     try {
@@ -231,6 +277,8 @@
     }
   });
   let chart = $derived(typeof strategy === "string" ? null : engine.chart(app.rules, app.count, app.strategy, at));
+  // With basic strategy only there is nothing per count: the chart then shows basic strategy at every count.
+  let atLabel = $derived(at === null || chart?.basic ? null : metricPrefix(app.count) + signed(at));
   let indices = $derived(typeof strategy === "string" ? [] : strategy.indices);
   let listed = $derived(indices.filter((i) => i.condition !== "always"));
 </script>
@@ -263,7 +311,7 @@
                     value={app.count.tags[i]}
                     min={-20}
                     max={20}
-                    decimals={2}
+                    decimals={4}
                     width="3.4em"
                     label={`Tag of ${r}`}
                     format={(v) => signedTrim(v)}
@@ -282,7 +330,7 @@
                       value={app.count.redTags[i]}
                       min={-20}
                       max={20}
-                      decimals={2}
+                      decimals={4}
                       width="3.4em"
                       label={`Tag of a red ${r}`}
                       format={(v) => signedTrim(v)}
@@ -302,8 +350,12 @@
       </label>
       <p class="note">
         {info.balanced ? "Balanced" : `Unbalanced (${signedTrim(info.imbalance)} per deck)`} · level {trim(info.level, 2)} ·
-        betting correlation {info.bettingCorrelation.toFixed(3)} · insurance correlation {info.insuranceCorrelation.toFixed(3)} ·
-        1 Hi-Lo TC ≈ {trim(info.factor, 2)} of this count
+        betting correlation {info.bettingCorrelation === null ? (eorFailed ? "—" : "…") : info.bettingCorrelation.toFixed(3)} · insurance correlation {info.insuranceCorrelation.toFixed(3)} ·
+        {#if app.count.metric === "RunningCount"}
+          1 Hi-Lo TC ≈ {trim(info.runningPerHiLo, 1)} running-count points at mid-shoe
+        {:else}
+          1 Hi-Lo TC ≈ {trim(info.factor, 2)} of this count
+        {/if}
       </p>
       <div class="fields">
         <Field label="Initial running count">
@@ -528,9 +580,9 @@
       </div>
       {#if chart}
         <div class="charts">
-          <StrategyChart kind="Hard" codes={chart.codes} cellEv={chart.cellEv} {indices} {showIndices} {atLabel} />
-          <StrategyChart kind="Soft" codes={chart.codes} cellEv={chart.cellEv} {indices} {showIndices} {atLabel} />
-          <StrategyChart kind="Pair" codes={chart.codes} cellEv={chart.cellEv} {indices} {showIndices} {atLabel} />
+          <StrategyChart kind="Hard" codes={chart.codes} cellEv={chart.cellEv} afterPeek={chart.afterPeek} {indices} {showIndices} {atLabel} />
+          <StrategyChart kind="Soft" codes={chart.codes} cellEv={chart.cellEv} afterPeek={chart.afterPeek} {indices} {showIndices} {atLabel} />
+          <StrategyChart kind="Pair" codes={chart.codes} cellEv={chart.cellEv} afterPeek={chart.afterPeek} {indices} {showIndices} {atLabel} />
         </div>
       {:else}
         <p class="bad">Strategy error: {strategy}</p>

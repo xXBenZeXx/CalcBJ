@@ -7,7 +7,7 @@ WebAssembly. It follows the C# engine in `src/Engine` file by file and gives exa
 |---|---|---|
 | `src/types.rs` | Types.cs | rules, count systems (13 presets), index settings |
 | `src/dealer.rs` | DealerDag.cs | exact dealer probabilities with card removal |
-| `src/ca.rs` | Combinatorial.cs | combinatorial analysis of one shoe composition (optionally regressed to a count after taking out the cards on the table), exact off-the-top expectation |
+| `src/ca.rs` | Combinatorial.cs | combinatorial analysis of one shoe composition (optionally regressed to a count after taking out the cards on the table), basic strategy and off-the-top expectation with exact card removal |
 | `src/strategy.rs` | Strategy.cs | strategy tables per count, generated indices (with each count bin's unseen cards and average count from `bin_moments`), overrides, index list |
 | `src/sim.rs` | Simulator.cs | shoe simulator, count lookup, multi-threaded driver (native only) |
 | `src/analysis.rs` | Analysis.cs | bet-ramp evaluation, ROR, trip ruin, optimiser |

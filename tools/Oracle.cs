@@ -167,6 +167,7 @@ static class Oracle
         var omega = Preset("Omega II");
         w.Obj();
         w.Key("cases").Arr();
+        int caseNo = 0;
         foreach (var c in RuleCases())
         {
             var r = c.Rules;
@@ -188,6 +189,13 @@ static class Oracle
             var eng = new CAEngine(r);
             w.Key("offTop"); CaJson(w, eng.Evaluate(CAEngine.FullShoe(r.Decks)), true);
             w.Key("houseEdge").Val(CAEngine.HouseEdgeOffTop(r));
+            // Basic strategy with exact card removal, and (for every third rule set: ten exact evaluations each) the
+            // effects of removal.
+            ExactAdjust basicAdj;
+            double basicOffTop;
+            w.Key("basic"); CaJson(w, CAEngine.BasicFor(r, out basicAdj, out basicOffTop), false);
+            w.Key("basicShifts").Val(basicAdj.StandShift).Key("basicRatios").Val(basicAdj.StandRatio);
+            if (caseNo++ % 3 == 0) w.Key("eor").Val(CAEngine.EffectsOfRemoval(r));
             var dep = CAEngine.FullShoe(r.Decks);
             dep[1] -= 1; dep[5] -= 3; dep[6] -= 2; dep[10] -= 4;
             var shoes = new List<KeyValuePair<string, double[]>>();
@@ -248,6 +256,9 @@ static class Oracle
             foreach (double v in res.CellEV) { if (double.IsNaN(v)) nan++; else sum += v; }
             w.Key("cellEVSum").Val(sum).Key("cellEVNaN").Val(nan);
         }
+        double bj = 0;
+        foreach (double v in res.CellBJ) bj += v;
+        w.Key("cellBJSum").Val(bj);
         w.End();
     }
 
@@ -652,7 +663,8 @@ static class Oracle
             var b = bins[i];
             if (b.N == 0) continue;
             w.Obj().Key("i").Val(i).Key("value").Val(b.Value).Key("n").Val(b.N).Key("freq").Val(b.Freq).Key("mean").Val(b.Mean)
-                .Key("m2").Val(b.M2).Key("cov").Val(b.Cov).Key("measuredCov").Val(b.MeasuredCov).Key("meanVar").Val(b.MeanVar).End();
+                .Key("m2").Val(b.M2).Key("cov").Val(b.Cov).Key("measuredCov").Val(b.MeasuredCov).Key("meanVar").Val(b.MeanVar)
+                .Key("meanLast").Val(b.MeanLast).Key("m2Last").Val(b.M2Last).Key("meanVarLast").Val(b.MeanVarLast).End();
         }
         w.End();
         w.Key("evaluations").Arr();

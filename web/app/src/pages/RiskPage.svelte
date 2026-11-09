@@ -8,12 +8,14 @@
   import Tile from "../lib/components/Tile.svelte";
   import Tiles from "../lib/components/Tiles.svelte";
   import { engine } from "../lib/engine/engine";
-  import { grouped, money, money0, pct } from "../lib/format";
+  import { grouped, money, money0, pct, ror as rorText } from "../lib/format";
   import { app } from "../lib/state.svelte";
   import { keyHint } from "../lib/text";
 
   const TARGETS = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.135, 0.2, 0.3];
   const PERCENTILES = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99];
+  /** The 90th percentile of the normal distribution, from the same function as the table's 90% row. */
+  const Z90 = engine.phiInv([0.9])[0] ?? 1.2815515655446004;
 
   let a = $derived(app.evaluation?.result.valid ? app.evaluation.result : null);
 
@@ -82,6 +84,8 @@
 
   let banner = $derived.by((): { text: string; tone: "info" | "warn" } | null => {
     if (!app.sim) return { text: `No simulation yet — press Run simulation${keyHint("F5")}.`, tone: "info" };
+    if (app.simOfAnotherCount)
+      return { text: "The last simulation was run with another count. Run the simulation for these settings.", tone: "info" };
     if (!a) return { text: "The current ramp never bets.", tone: "info" };
     if (app.simStale)
       return { text: "⚠  Settings changed since the last simulation; figures are for the previous settings.", tone: "warn" };
@@ -138,8 +142,9 @@
               <tr>
                 <td class="num">{pct(t, t < 0.01 || t === 0.135 ? 1 : 0)}</td>
                 <td class="num">{a ? money0(b) : "—"}</td>
-                <td class="num">{a ? grouped(b / app.unit) : "—"}</td>
-                <td class="num">{a && maxBet > 0 ? grouped(b / maxBet) : "—"}</td>
+                <!-- A losing game: no bankroll is enough, in every column. -->
+                <td class="num">{a && Number.isFinite(b) ? grouped(b / app.unit) : "—"}</td>
+                <td class="num">{a && maxBet > 0 && Number.isFinite(b) ? grouped(b / maxBet) : "—"}</td>
               </tr>
             {/each}
           </tbody>
@@ -173,7 +178,7 @@
         {#if a && trip}
           <Tile
             title="Lifetime risk of ruin"
-            value={pct(a.ror, a.ror < 0.001 ? 4 : 2)}
+            value={rorText(a.ror)}
             sub={`with ${money0(app.bankroll)}`}
             tone={a.ror > 0.2 ? "bad" : a.ror < 0.05 ? "good" : undefined}
           />
@@ -186,16 +191,16 @@
           <Tile title="Chance of a losing trip" value={pct(trip.lose, 1)} sub="behind at the end of the trip" />
           <Tile
             title="Chance to bust trip bankroll"
-            value={pct(trip.ruin, trip.ruin < 0.001 ? 3 : 1)}
+            value={rorText(trip.ruin)}
             sub={`trip bankroll ${money0(app.tripBankroll)}`}
             tone={trip.ruin > 0.2 ? "bad" : undefined}
           />
-          <Tile title="Good trip (90th pct.)" value={money0(trip.expected + 1.2816 * trip.sd)} sub="1 trip in 10 is better" tone="good" />
+          <Tile title="Good trip (90th pct.)" value={money0(trip.expected + Z90 * trip.sd)} sub="1 trip in 10 is better" tone="good" />
           <Tile
             title="Bad trip (10th pct.)"
-            value={money0(trip.expected - 1.2816 * trip.sd)}
+            value={money0(trip.expected - Z90 * trip.sd)}
             sub="1 trip in 10 is worse"
-            tone={trip.expected - 1.2816 * trip.sd >= 0 ? "good" : "bad"}
+            tone={trip.expected - Z90 * trip.sd >= 0 ? "good" : "bad"}
           />
         {:else}
           {#each ["Lifetime risk of ruin", "Expected trip result", "Chance of a losing trip", "Chance to bust trip bankroll", "Good trip (90th pct.)", "Bad trip (10th pct.)"] as t (t)}

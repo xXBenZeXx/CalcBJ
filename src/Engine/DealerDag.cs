@@ -113,10 +113,24 @@ namespace CalcBJ.Engine
                 if (denom <= 1e-12) continue;
                 double f = ms / denom;
                 int b = s * 10;
+                double lack = 0;
                 for (int r = 0; r < 10; r++)
                 {
                     double avail = comp[r + 1] - mm[b + r];
                     if (avail > 1e-12) mass[ch[b + r]] += f * avail;
+                    else if (avail < 0) lack -= avail;
+                }
+                if (lack > 0)
+                {
+                    // A composition with fractions of cards (the count model's) can hold less of a rank than the dealer
+                    // has drawn. What it lacks isn't among the cards left: share this state's mass over denom + lack
+                    // cards, so the outcomes still add up to 1. Never happens with whole cards.
+                    double g = ms / (denom + lack) - f;
+                    for (int r = 0; r < 10; r++)
+                    {
+                        double avail = comp[r + 1] - mm[b + r];
+                        if (avail > 1e-12) mass[ch[b + r]] += g * avail;
+                    }
                 }
             }
         }

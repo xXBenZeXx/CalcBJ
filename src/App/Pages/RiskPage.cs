@@ -112,7 +112,9 @@ namespace CalcBJ.App
             ChartUtil.Clear(rorChart); ChartUtil.Clear(pathChart);
             if (a == null || !a.Valid)
             {
-                banner.Show(State.Sim == null ? "No simulation yet — press Run simulation (F5)." : "The current ramp never bets.", false);
+                ChartUtil.Message(rorChart, ""); ChartUtil.Message(pathChart, "");
+                banner.Show(State.Sim == null ? "No simulation yet — press Run simulation (F5)."
+                    : (State.SimOfAnotherCount ? "The last simulation was run with another count. Press F5 to simulate these settings." : "The current ramp never bets."), false);
                 foreach (var t in new[] { tRor, tTripExp, tTripLose, tTripRuin, tTripBest, tTripWorst }) t.Set("—", "");
                 return;
             }
@@ -125,18 +127,20 @@ namespace CalcBJ.App
             double exp = mu * n, sd = Math.Sqrt(vr * n);
             double maxBet = State.Ramp.MaxBet() * unit;   // all hands of the top bet
 
-            tRor.Set(Theme.Pct(a.ROR, a.ROR < 0.001 ? 4 : 2), "with " + Theme.Money0(State.Bankroll), a.ROR > 0.2 ? Theme.Bad : (a.ROR < 0.05 ? Theme.Good : Theme.Text));
+            tRor.Set(Theme.Ror(a.ROR), "with " + Theme.Money0(State.Bankroll), a.ROR > 0.2 ? Theme.Bad : (a.ROR < 0.05 ? Theme.Good : Theme.Text));
             tTripExp.Set(Theme.Money0(exp), "± " + Theme.Money0(sd) + " (1 SD) over " + Theme.F(State.TripHours, "#,0") + " h", exp >= 0 ? Theme.Good : Theme.Bad);
             tTripLose.Set(Theme.Pct(Analysis.ProbLoss(mu, vr, n), 1), "behind at the end of the trip");
             double tr = Analysis.TripRuin(mu, vr, State.TripBankroll, n);
-            tTripRuin.Set(Theme.Pct(tr, tr < 0.001 ? 3 : 1), "trip bankroll " + Theme.Money0(State.TripBankroll), tr > 0.2 ? Theme.Bad : Theme.Text);
-            tTripBest.Set(Theme.Money0(exp + 1.2816 * sd), "1 trip in 10 is better", Theme.Good);
-            tTripWorst.Set(Theme.Money0(exp - 1.2816 * sd), "1 trip in 10 is worse", exp - 1.2816 * sd >= 0 ? Theme.Good : Theme.Bad);
+            tTripRuin.Set(Theme.Ror(tr), "trip bankroll " + Theme.Money0(State.TripBankroll), tr > 0.2 ? Theme.Bad : Theme.Text);
+            double z90 = Analysis.PhiInv(0.9);   // the same value as the 90% row of the table below
+            tTripBest.Set(Theme.Money0(exp + z90 * sd), "1 trip in 10 is better", Theme.Good);
+            tTripWorst.Set(Theme.Money0(exp - z90 * sd), "1 trip in 10 is worse", exp - z90 * sd >= 0 ? Theme.Good : Theme.Bad);
 
             foreach (double t in Targets)
             {
                 double b = a.BankrollForRor(t);
-                needed.Rows.Add(Theme.Pct(t, t < 0.01 ? 1 : (t == 0.135 ? 1 : 0)), Theme.Money0(b), Theme.F(b / unit, "#,0"), maxBet > 0 ? Theme.F(b / maxBet, "#,0") : "—");
+                bool none = double.IsInfinity(b) || double.IsNaN(b);   // a losing game: no bankroll is enough
+                needed.Rows.Add(Theme.Pct(t, t < 0.01 ? 1 : (t == 0.135 ? 1 : 0)), Theme.Money0(b), none ? "—" : Theme.F(b / unit, "#,0"), maxBet > 0 && !none ? Theme.F(b / maxBet, "#,0") : "—");
             }
             GridUtil.FitHeight(needed, 12);
             foreach (double p in Percentiles)

@@ -217,6 +217,7 @@ namespace CalcBJ.App
             }
 
             if (State.Sim == null) banner.Show("No simulation yet — press Run simulation (F5).", false);
+            else if (State.SimOfAnotherCount) banner.Show("⚠  The last simulation was run with another count, so this bet ramp can't be worked out on it. Press F5 to simulate these settings.", true);
             else if (State.SimStale) banner.Show("⚠  Settings changed since the last simulation; these results are for the previous settings. Press F5 to re-run.", true);
             else if (a != null && a.UsedAssumedCov) banner.Show("Multi-hand rows use an assumed correlation of 0.37 because the simulation was heads-up. Use 2+ spots for measured covariance.", false);
             else if (State.SimRunning) banner.Show("Simulation running — results refine as more rounds come in.", false);
@@ -233,7 +234,7 @@ namespace CalcBJ.App
             tEdge.Set(Theme.SignedPct(a.EdgePct / 100, 3), "avg bet " + Theme.Money(a.AvgBetPlayed * State.Unit) + " when playing", a.EdgePct >= 0 ? Theme.Good : Theme.Bad);
             tScore.Set(Theme.F(a.Score, "0.00"), "win/100 rds on a $10k Kelly bankroll  ·  DI " + Theme.F(a.DI, "0.00"));
             tN0.Set(a.EV > 0 ? Theme.F(a.N0, "#,0") + " rds" : "never", a.EV > 0 ? "≈ " + Theme.F(a.HoursN0, "#,0") + " hours" : "negative expectation");
-            tRor.Set(Theme.Pct(a.ROR, a.ROR < 0.001 ? 4 : 2), "lifetime, " + Theme.Money0(State.Bankroll) + " bankroll", a.ROR > 0.2 ? Theme.Bad : (a.ROR < 0.05 ? Theme.Good : Theme.Text));
+            tRor.Set(Theme.Ror(a.ROR), "lifetime, " + Theme.Money0(State.Bankroll) + " bankroll", a.ROR > 0.2 ? Theme.Bad : (a.ROR < 0.05 ? Theme.Good : Theme.Text));
             tBank.Set(Theme.Money0(a.BankrollForRor(0.05)), "13.5% ROR: " + Theme.Money0(a.BankrollForRor(0.135)) + "  ·  1%: " + Theme.Money0(a.BankrollForRor(0.01)));
             tKelly.Set(Theme.Money(a.KellyUnit), a.KellyUnit > 0 ? "your unit is " + Theme.F(State.Unit / a.KellyUnit, "0.00") + "× Kelly" : "");
             tCe.Set(Theme.Money(a.CEPerHour) + "/h", "risk-adjusted win for your bankroll", a.CEPerHour >= 0 ? Theme.Good : Theme.Bad);

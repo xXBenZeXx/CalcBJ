@@ -120,10 +120,25 @@ impl DealerDag {
             }
             let f = ms / denom;
             let b = s * 10;
+            let mut lack = 0.0;
             for r in 0..10 {
                 let avail = comp[r + 1] - self.m[b + r] as f64;
                 if avail > 1e-12 {
                     mass[self.child[b + r] as usize] += f * avail;
+                } else if avail < 0.0 {
+                    lack -= avail;
+                }
+            }
+            if lack > 0.0 {
+                // A composition with fractions of cards (the count model's) can hold less of a rank than the dealer has
+                // drawn. What it lacks isn't among the cards left: share this state's mass over denom + lack cards, so
+                // the outcomes still add up to 1. Never happens with whole cards.
+                let g = ms / (denom + lack) - f;
+                for r in 0..10 {
+                    let avail = comp[r + 1] - self.m[b + r] as f64;
+                    if avail > 1e-12 {
+                        mass[self.child[b + r] as usize] += g * avail;
+                    }
                 }
             }
         }

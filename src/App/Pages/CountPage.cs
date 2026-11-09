@@ -20,8 +20,6 @@ namespace CalcBJ.App
         static readonly string[] PlayNames = { "Stand", "Hit", "Double", "No double", "Split", "No split", "Surrender", "No surrender", "Insure" };
         static readonly string[] UpNames = { "2", "3", "4", "5", "6", "7", "8", "9", "T", "A" };
         bool loading;
-        double[] eorCache;
-        string eorKey;
 
         public CountPage(AppState s)
             : base(s, "Count & strategy", "Counting system, true-count conversion and the index plays used in the simulation.", 50, 50)
@@ -244,15 +242,19 @@ namespace CalcBJ.App
             var p = presets[preset.SelectedIndex].Clone();
             p.DeckEst = State.Count.DeckEst;
             p.Rounding = State.Count.Rounding;
+            var old = State.Count;
             State.Count = p;
-            AfterCountChange();
+            AfterCountChange(old);
         }
 
-        void AfterCountChange()
+        /// <summary>
+        /// Another count: its values mean other true counts, so the ramp moves with them (a preset is applied again, a
+        /// custom ramp keeps its bets at the same true counts) and the index range is set anew.
+        /// </summary>
+        void AfterCountChange(CountSystem old)
         {
-            State.ResetRampRange();
+            State.CarryRamp(old, State.Rules);
             State.ResetIndexRange();
-            State.ApplyPreset(State.RampPreset);
             LoadFromState();
             State.NotifyConfig();
             State.NotifyBetting();
@@ -280,24 +282,29 @@ namespace CalcBJ.App
             bool same = cs.Key() == State.Count.Key();
             int pi = presets.FindIndex(p => p.Key() == cs.Key());
             cs.Name = pi >= 0 ? presets[pi].Name : (same ? State.Count.Name : "Custom");
+            var old = State.Count;
             State.Count = cs;
-            if (!same) AfterCountChange(); else LoadFromState();
+            if (!same) AfterCountChange(old); else LoadFromState();
         }
 
         void SaveConversion()
         {
             var cs = State.Count;
+            var old = cs.Clone();
             cs.IrcBase = (double)ircBase.Value;
             cs.IrcPerDeck = (double)ircPerDeck.Value;
-            var oldMetric = cs.Metric;
             cs.Metric = (CountMetric)metric.SelectedIndex;
             cs.DeckEst = (DeckEstimation)deckEst.SelectedIndex;
             cs.Rounding = (TcRounding)rounding.SelectedIndex;
-            if (cs.Metric != oldMetric || cs.Metric == CountMetric.RunningCount || !cs.IsBalanced)
-            {
-                State.ResetRampRange();
-                State.ResetIndexRange();
+            bool moved = cs.Metric != old.Metric || cs.IrcBase != old.IrcBase || cs.IrcPerDeck != old.IrcPerDeck;
+            // Rounding decides which true counts a row stands for, so a preset is applied again; a custom ramp stays.
+            if (!moved && cs.Rounding != old.Rounding && State.RampPreset >= 0 && State.RampPreset < RampPresets.Custom)
                 State.ApplyPreset(State.RampPreset);
+            if (moved)
+            {
+                // Count values mean other true counts now: the ramp moves with them, and the index range is set anew.
+                State.CarryRamp(old, State.Rules);
+                State.ResetIndexRange();
                 loading = true;
                 idxMin.Value = Math.Max(idxMin.Minimum, Math.Min(idxMin.Maximum, State.Strategy.IndexMin));
                 idxMax.Value = Math.Max(idxMax.Minimum, Math.Min(idxMax.Maximum, State.Strategy.IndexMax));
@@ -389,9 +396,10 @@ namespace CalcBJ.App
                 if (o.Kind == HandKind.Insurance) { o.Play = PlayKind.Insure; o.Upcard = 1; }
                 o.AtOrAbove = Convert.ToString(row.Cells[5].Value) != "≤";
                 double idx;
-                o.Index = Theme.TryParse(Convert.ToString(row.Cells[6].Value, CultureInfo.InvariantCulture), out idx) ? idx : 0;
-                bool valid = o.Kind == HandKind.Insurance || (o.Upcard >= 1 && ((o.Kind == HandKind.Pair && o.Total >= 1) ||
-                    (o.Kind == HandKind.Soft && o.Total >= 12 && o.Total <= 21) || (o.Kind == HandKind.Hard && o.Total >= 4 && o.Total <= 21)));
+                bool readable = Theme.TryParse(Convert.ToString(row.Cells[6].Value, CultureInfo.InvariantCulture), out idx);
+                o.Index = readable ? idx : 0;
+                bool valid = readable && (o.Kind == HandKind.Insurance || (o.Upcard >= 1 && ((o.Kind == HandKind.Pair && o.Total >= 1) ||
+                    (o.Kind == HandKind.Soft && o.Total >= 12 && o.Total <= 21) || (o.Kind == HandKind.Hard && o.Total >= 4 && o.Total <= 21))));
                 row.DefaultCellStyle.ForeColor = valid ? Theme.Text : Theme.Bad;
                 if (valid) list.Add(o);
             }
@@ -417,6 +425,11 @@ namespace CalcBJ.App
                 { HandKind.Hard, 14, 10, PlayKind.Surrender, 3 }, { HandKind.Hard, 15, 10, PlayKind.Surrender, 0 },
                 { HandKind.Hard, 15, 9, PlayKind.Surrender, 2 }, { HandKind.Hard, 15, 1, PlayKind.Surrender, 1 },
             };
+            // The numbers are Hi-Lo true counts. For any other count (a running count, another level, a starting count)
+            // each one becomes the nearest value of that count that stands for the same true count.
+            var count = State.Count;
+            bool asPublished = count.Metric == CountMetric.TrueCount && count.IsBalanced && count.IrcBase == 0 && count.IrcPerDeck == 0
+                && Math.Abs(CountScale.Factor(count) - 1) < 0.005;
             for (int i = 0; i < rows.GetLength(0); i++)
             {
                 var o = new IndexOverride();
@@ -429,6 +442,8 @@ namespace CalcBJ.App
                     else if (o.Total == 10 && o.Play == PlayKind.Double) o.Index = 3;
                     else if (o.Total == 15 && o.Play == PlayKind.Surrender) o.Index = -1;
                 }
+                if (!asPublished)
+                    o.Index = Math.Max(PlayTable.BinMin, Math.Min(PlayTable.BinMax, Math.Round(CountScale.MetricFor(count, State.Rules, o.Index), MidpointRounding.AwayFromZero)));
                 AddOverrideRow(o);
             }
             SaveOverrides();
@@ -445,8 +460,12 @@ namespace CalcBJ.App
             string bal = cs.IsBalanced ? "Balanced" : "Unbalanced (" + Fmt(imb) + " per deck)";
             double bc, ic;
             Correlations(out bc, out ic);
-            countInfo.Text = string.Format(CultureInfo.InvariantCulture, "{0}  ·  level {1}  ·  betting correlation {2:0.000}  ·  insurance correlation {3:0.000}  ·  1 Hi-Lo TC ≈ {4:0.##} of this count",
-                bal, cs.Level().ToString("0.##", CultureInfo.InvariantCulture), bc, ic, CountScale.Factor(cs));
+            // A running count moves by its factor times the decks left for each Hi-Lo true count (here: at mid-shoe).
+            string perHiLo = cs.Metric == CountMetric.RunningCount
+                ? string.Format(CultureInfo.InvariantCulture, "1 Hi-Lo TC ≈ {0:0.#} running-count points at mid-shoe", CountScale.Factor(cs) * StrategyBuilder.MidDepthDecks(r))
+                : string.Format(CultureInfo.InvariantCulture, "1 Hi-Lo TC ≈ {0:0.##} of this count", CountScale.Factor(cs));
+            countInfo.Text = string.Format(CultureInfo.InvariantCulture, "{0}  ·  level {1}  ·  betting correlation {2:0.000}  ·  insurance correlation {3:0.000}  ·  {4}",
+                bal, cs.Level().ToString("0.##", CultureInfo.InvariantCulture), bc, ic, perHiLo);
             ircInfo.Text = string.Format(CultureInfo.InvariantCulture, "Running count starts at {0} for {1} deck(s).", Fmt(cs.Irc(r.Decks)), r.Decks);
             if (cs.Metric == CountMetric.RunningCount)
                 metricNote.Text = "Bets and index plays key off the running count itself; true-count settings are ignored. "
@@ -454,7 +473,8 @@ namespace CalcBJ.App
             else if (!cs.IsBalanced)
                 metricNote.Text = "This count is unbalanced: the true count is the running count (including the IRC) divided by decks remaining. Set the IRC to suit.";
             else
-                metricNote.Text = "True count = running count ÷ estimated decks remaining (unseen cards, " + DeckText(cs.DeckEst) + "), then " + cs.Rounding.ToString().ToLowerInvariant() + "ed to a whole number.";
+                metricNote.Text = "True count = running count ÷ estimated decks remaining (unseen cards, " + DeckText(cs.DeckEst) + "), then "
+                    + (cs.Rounding == TcRounding.Floor ? "floored" : (cs.Rounding == TcRounding.Truncate ? "truncated" : "rounded")) + " to a whole number.";
             deckEst.Enabled = rounding.Enabled = cs.Metric == CountMetric.TrueCount;
         }
 
@@ -473,24 +493,10 @@ namespace CalcBJ.App
         {
             var r = State.Rules;
             string key = r.Key();
-            if (eorCache == null || eorKey != key)
-            {
-                eorCache = new double[11];
-                try
-                {
-                    var eng = new CAEngine(r);
-                    var full = CAEngine.FullShoe(r.Decks);
-                    double b = eng.Evaluate(full).PlayerEV;
-                    for (int k = 1; k <= 10; k++)
-                    {
-                        var c = (double[])full.Clone();
-                        c[k] -= 1;
-                        eorCache[k] = eng.Evaluate(c).PlayerEV - b;
-                    }
-                }
-                catch { }
-                eorKey = key;
-            }
+            // Effects of removal for basic strategy played unchanged, worked out exactly (remembered per rule set).
+            double[] eorCache;
+            try { eorCache = CAEngine.EffectsOfRemoval(r); }
+            catch { eorCache = new double[11]; }
             // Card by card (red and black separately), so counts with red tags such as Red Seven get their real tags.
             var cs = State.Count;
             double[] t = new double[20], eor = new double[20], ins = new double[20], w = new double[20];
@@ -537,7 +543,7 @@ namespace CalcBJ.App
             viewAt.Items.Clear();
             viewAt.Items.Add("Basic strategy (off the top)");
             string m = State.Count.Metric == CountMetric.TrueCount ? "TC " : "RC ";
-            for (int v = State.Strategy.IndexMin; v <= State.Strategy.IndexMax; v++)
+            for (int v = Math.Min(State.Strategy.IndexMin, State.Strategy.IndexMax); v <= Math.Max(State.Strategy.IndexMin, State.Strategy.IndexMax); v++)
                 viewAt.Items.Add(m + (v > 0 ? "+" + v : v.ToString(CultureInfo.InvariantCulture)));
             int idx = sel != null ? viewAt.Items.IndexOf(sel) : -1;
             viewAt.SelectedIndex = idx >= 0 ? idx : (prev > 0 && prev < viewAt.Items.Count ? prev : 0);
@@ -557,13 +563,13 @@ namespace CalcBJ.App
             string label = "";
             if (viewAt.SelectedIndex > 0)
             {
-                at = State.Strategy.IndexMin + viewAt.SelectedIndex - 1;
+                at = Math.Min(State.Strategy.IndexMin, State.Strategy.IndexMax) + viewAt.SelectedIndex - 1;
                 label = Convert.ToString(viewAt.SelectedItem);
             }
             var list = StrategyBuilder.DescribeIndices(pt, State.Strategy.IndexMin, State.Strategy.IndexMax);
-            hard.Render(pt, at, showIdx.Checked, list, label);
-            soft.Render(pt, at, showIdx.Checked, list, label);
-            pairs.Render(pt, at, showIdx.Checked, list, label);
+            hard.Render(pt, State.Rules, at, showIdx.Checked, list, label);
+            soft.Render(pt, State.Rules, at, showIdx.Checked, list, label);
+            pairs.Render(pt, State.Rules, at, showIdx.Checked, list, label);
             indexList.Rows.Clear();
             foreach (var i in list)
             {

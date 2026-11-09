@@ -32,6 +32,9 @@ fn bins_rows_and_evaluation() {
             c.num(&format!("{what} cov"), b.cov, num(&w["cov"]), 0.0);
             c.eq(&format!("{what} measured cov"), b.measured_cov, flag(&w["measuredCov"]));
             c.num(&format!("{what} mean var"), b.mean_var, num(&w["meanVar"]), 0.0);
+            c.num(&format!("{what} last seat mean"), b.mean_last, num(&w["meanLast"]), 0.0);
+            c.num(&format!("{what} last seat m2"), b.m2_last, num(&w["m2Last"]), 0.0);
+            c.num(&format!("{what} last seat mean var"), b.mean_var_last, num(&w["meanVarLast"]), 0.0);
         }
         c.eq(&format!("{label}: bins with hands"), bins.iter().filter(|b| b.n > 0).count(), seen);
 

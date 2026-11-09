@@ -15,6 +15,8 @@ namespace CalcBJ.App
         readonly Label penInfo, heBig, heSub, spotsInfo;
         readonly DataGridView effects;
         static readonly double[] Payouts = { 1.5, 1.4, 1.2, 1.0, 2.0 };
+        // A payout from a file that isn't one of these gets an entry of its own while it is in use.
+        double otherPayout = 1.5;
         bool loading;
 
         public GamePage(AppState s)
@@ -99,7 +101,9 @@ namespace CalcBJ.App
             hole.SelectedIndex = (int)r.HoleCard;
             insurance.Checked = r.Insurance;
             int bi = Array.IndexOf(Payouts, r.BlackjackPays);
-            bj.SelectedIndex = bi < 0 ? 0 : bi;
+            while (bj.Items.Count > Payouts.Length) bj.Items.RemoveAt(bj.Items.Count - 1);
+            if (bi < 0) { otherPayout = r.BlackjackPays; bj.Items.Add(Rules.PayoutText(otherPayout)); bi = Payouts.Length; }
+            bj.SelectedIndex = bi;
             dbl.SelectedIndex = (int)r.DoubleOn;
             das.Checked = r.DAS;
             splits.SelectedIndex = Math.Max(0, Math.Min(3, r.MaxSplitHands - 1));
@@ -117,14 +121,14 @@ namespace CalcBJ.App
         {
             if (loading) return;
             var r = State.Rules;
-            int oldDecks = r.Decks;
+            var before = r.Clone();
             r.Decks = decks.SelectedIndex + 1;
             r.Penetration = (double)pen.Value / 100.0;
             r.BurnCard = burn.Checked;
             r.H17 = soft17.SelectedIndex == 1;
             r.HoleCard = (HoleCardRule)hole.SelectedIndex;
             r.Insurance = insurance.Checked;
-            r.BlackjackPays = Payouts[Math.Max(0, bj.SelectedIndex)];
+            r.BlackjackPays = bj.SelectedIndex >= Payouts.Length ? otherPayout : Payouts[Math.Max(0, bj.SelectedIndex)];
             r.DoubleOn = (DoubleRule)dbl.SelectedIndex;
             r.DAS = das.Checked;
             r.MaxSplitHands = splits.SelectedIndex + 1;
@@ -140,11 +144,14 @@ namespace CalcBJ.App
                 loading = true; rph.Value = (decimal)State.RoundsPerHour; loading = false;
             }
             else State.RoundsPerHour = (double)rph.Value;
-            if (r.Decks != oldDecks && (State.Count.Metric == CountMetric.RunningCount || !State.Count.IsBalanced))
+            if (AppState.DependsOnDecks(State.Count))
             {
-                State.ResetRampRange();
-                State.ResetIndexRange();
-                State.ApplyPreset(State.RampPreset);
+                // Count values mean other true counts now. With other decks the ramp moves with them (a preset is applied
+                // again, a custom ramp keeps its bets at the same true counts) and the index range is set anew. With another
+                // penetration only a preset follows; a custom ramp stays as it was set.
+                if (r.Decks != before.Decks) { State.CarryRamp(State.Count, before); State.ResetIndexRange(); }
+                else if (r.Penetration != before.Penetration && State.RampPreset >= 0 && State.RampPreset < RampPresets.Custom)
+                    State.CarryRamp(State.Count, before);
             }
             State.NotifyConfig();
             State.NotifyBetting();
@@ -188,7 +195,8 @@ namespace CalcBJ.App
             {
                 heBig.Text = "+" + Theme.Pct(ev, 3);
                 heBig.ForeColor = Theme.Good;
-                heSub.Text = "Player edge for perfect basic strategy off the top — this game is beatable without counting.";
+                heSub.Text = "Player edge for a perfect basic-strategy player on the first round of a fresh shoe. With a cut card "
+                    + "a flat bet does a little worse than that (about 0.1% with one deck): simulate basic strategy to see it.";
             }
 
             var rows = new List<KeyValuePair<string, Rules>>();

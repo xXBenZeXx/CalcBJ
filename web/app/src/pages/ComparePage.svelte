@@ -1,6 +1,6 @@
 <script lang="ts">
   import Card from "../lib/components/Card.svelte";
-  import { count, fixed, grouped, money, money0, pct, signedPct, trim } from "../lib/format";
+  import { count, fixed, grouped, money, money0, pct, ror, signedPct, trim } from "../lib/format";
   import type { CompareEntry } from "../lib/scenario";
   import { app } from "../lib/state.svelte";
 
@@ -35,7 +35,7 @@
       get: (e) => (e.n0 === Infinity ? "never (losing game)" : `${grouped(e.n0)} / ${grouped(e.hoursN0)}`),
       value: (e) => -e.n0,
     },
-    { label: "Risk of ruin", get: (e) => pct(e.ror, 2), value: (e) => -e.ror },
+    { label: "Risk of ruin", get: (e) => ror(e.ror), value: (e) => -e.ror },
     { label: "Bankroll for 5% ROR", get: (e) => money0(e.bankroll5), value: (e) => -e.bankroll5 },
     { label: "Kelly-optimal unit", get: (e) => money(e.kellyUnit) },
     { label: "Certainty equivalent / hour", get: (e) => money(e.cePerHour), value: (e) => e.cePerHour },

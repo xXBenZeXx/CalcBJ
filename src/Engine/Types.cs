@@ -43,6 +43,23 @@ namespace CalcBJ.Engine
 
         public Rules Clone() { return (Rules)MemberwiseClone(); }
 
+        /// <summary>Most hands a pair can be split to, in the analysis and in the simulator.</summary>
+        public const int MaxSplitLimit = 4;
+
+        /// <summary>
+        /// Brings values read from a file into the ranges the program works with: 1 to 8 decks, split to at most 4 hands,
+        /// a blackjack payout in twentieths of a unit (what the simulator pays in) and a penetration from 0 to 1.
+        /// </summary>
+        public void Sanitize()
+        {
+            Decks = Math.Max(1, Math.Min(8, Decks));
+            MaxSplitHands = Math.Max(1, Math.Min(MaxSplitLimit, MaxSplitHands));
+            if (double.IsNaN(BlackjackPays)) BlackjackPays = 1.5;
+            BlackjackPays = Math.Round(Math.Max(0, Math.Min(10, BlackjackPays)) * 20) / 20;
+            if (double.IsNaN(Penetration)) Penetration = 0.75;
+            Penetration = Math.Max(0, Math.Min(1, Penetration));
+        }
+
         public bool CanDoubleTotal(int hard, bool soft)
         {
             switch (DoubleOn)
@@ -247,14 +264,16 @@ namespace CalcBJ.Engine
         /// <summary>
         /// Brings a count saved by an older version up to date where a preset's definition has since been corrected:
         /// before 0.1.1 Canfield Expert counted the 2 as +1. Edited counts are named "Custom", so a preset name with the old
-        /// tags can only come from such a file or saved settings.
+        /// tags can only come from such a file or saved settings. True if the count was changed: its count values then mean
+        /// other true counts than before (the old tags were unbalanced), so a ramp or index range saved with it needs moving.
         /// </summary>
-        public static void UpgradeSaved(CountSystem cs)
+        public static bool UpgradeSaved(CountSystem cs)
         {
-            if (cs == null || cs.Name != "Canfield Expert" || cs.RedTags != null || cs.Tags == null || cs.Tags.Length != 10) return;
+            if (cs == null || cs.Name != "Canfield Expert" || cs.RedTags != null || cs.Tags == null || cs.Tags.Length != 10) return false;
             double[] old = { 0, 1, 1, 1, 1, 1, 1, 0, -1, -1 };
-            for (int i = 0; i < 10; i++) if (cs.Tags[i] != old[i]) return;
+            for (int i = 0; i < 10; i++) if (cs.Tags[i] != old[i]) return false;
             cs.Tags[1] = 0;
+            return true;
         }
 
         public static List<CountSystem> Presets()

@@ -4,7 +4,7 @@ import { engine } from "./engine/engine";
 import type { AnalysisResult, IndexMode, OptimizerSettings } from "./engine/types";
 import { trim } from "./format";
 import { simulation } from "./simulation.svelte";
-import { RPH_TABLE, app } from "./state.svelte";
+import { CUSTOM_PRESET, RPH_TABLE, app, dependsOnDecks } from "./state.svelte";
 import { countText, strategyText } from "./text";
 
 export const SWEEP_PARAMETERS = [
@@ -62,7 +62,12 @@ class Sweep {
 
   private cancel = false;
 
-  note = $derived(NOTES[this.parameter]);
+  // The max-bet sweep works on the simulation in hand: say so when that was run with other settings.
+  note = $derived(
+    this.parameter === 4 && app.simStale
+      ? "⚠  The settings changed since the last simulation: these points are for the settings it was run with."
+      : NOTES[this.parameter],
+  );
 
   setParameter(p: number): void {
     this.parameter = p;
@@ -82,7 +87,7 @@ class Sweep {
       return;
     }
     const sim = app.sim;
-    if (p === 4 && !sim) {
+    if (p === 4 && (!sim || app.simOfAnotherCount)) {
       this.status = "Run a simulation first.";
       return;
     }
@@ -127,11 +132,17 @@ class Sweep {
           let label: string;
           if (p === 0) {
             r.penetration = Math.max(0, Math.min(1, v / 100));
-            label = trim(v, 1) + "%";
+            // The cut card can't go deeper than the cards the round in progress may need.
+            const info = engine.rulesInfo(r, sp);
+            const dealt = (100 * info.cutCard) / info.totalCards;
+            const nominal = r.penetration * 100;
+            label = trim(nominal, 1) + "%" + (nominal > 0 && dealt < nominal - 0.5 ? ` (cut at ${trim(dealt, 1)}%)` : "");
+            // As on the Game page: a preset ramp of a running count follows the penetration.
+            if (dependsOnDecks(count) && preset < CUSTOM_PRESET) pointRamp = engine.rampForRules(rules, r, count, ramp, preset);
           } else if (p === 1) {
             r.decks = Math.max(1, Math.min(8, Math.trunc(v)));
             label = r.decks + "D";
-            if (count.metric === "RunningCount" || !engine.countInfo(rules, count).balanced) {
+            if (dependsOnDecks(count)) {
               // As on the Game page: the index range and the ramp move with the number of decks.
               const range = engine.indexRange(r, count);
               sc.indexMin = range.min;

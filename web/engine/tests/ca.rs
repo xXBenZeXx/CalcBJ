@@ -33,6 +33,7 @@ fn compare_ca(c: &mut Check, label: &str, res: &CaResult, want: &Value) {
         c.num(&format!("{label}: cellEV sum"), sum, num(&want["cellEVSum"]), 1e-12);
         c.eq(&format!("{label}: cellEV NaN count"), nan, int(&want["cellEVNaN"]));
     }
+    c.num(&format!("{label}: cellBJ sum"), res.cell_bj.iter().sum(), num(&want["cellBJSum"]), 1e-12);
 }
 
 #[test]
@@ -71,6 +72,13 @@ fn combinatorial_analysis() {
         let res = engine.evaluate(&full_shoe(r.decks as f64));
         compare_ca(&mut c, &format!("{label}, off the top"), &res, &case["offTop"]);
         c.num(&format!("{label}: house edge"), house_edge_off_top(&r), num(&case["houseEdge"]), TOL);
+        let (basic, adj, _) = basic_for(&r);
+        compare_ca(&mut c, &format!("{label}, basic strategy"), &basic, &case["basic"]);
+        c.nums(&format!("{label}: stand shifts"), &adj.stand_shift, &nums(&case["basicShifts"]), 1e-12);
+        c.nums(&format!("{label}: multi-card ratios"), &adj.stand_ratio, &nums(&case["basicRatios"]), 1e-12);
+        if let Some(eor) = case.get("eor") {
+            c.nums(&format!("{label}: effects of removal"), &effects_of_removal(&r), &nums(eor), TOL);
+        }
         for s in list(&case["shoes"]) {
             let res = engine.evaluate(&shoe11(&s["shoe"]));
             compare_ca(&mut c, &format!("{label}, {}", text(&s["label"])), &res, &s["result"]);

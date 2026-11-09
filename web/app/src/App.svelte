@@ -4,7 +4,7 @@
   import Banner from "./lib/components/Banner.svelte";
   import { engine } from "./lib/engine/engine";
   import { openScenario, openScenarioDialog, savedText, saveScenario } from "./lib/files";
-  import { count, fixed, money, money0, pct } from "./lib/format";
+  import { count, fixed, money, money0, pct, ror } from "./lib/format";
   import { insideApp, nativeApp, touchScreen } from "./lib/platform";
   import { simulation } from "./lib/simulation.svelte";
   import { app, type PageId } from "./lib/state.svelte";
@@ -339,7 +339,7 @@
         <div class="chip"><span>SCORE</span><b>{result ? fixed(result.score, 1) : "—"}</b></div>
         <div class="chip">
           <span>Risk of ruin</span>
-          <b class:bad={!!result && result.ror > 0.2}>{result ? pct(result.ror, result.ror < 0.001 ? 3 : 1) : "—"}</b>
+          <b class:bad={!!result && result.ror > 0.2}>{result ? ror(result.ror) : "—"}</b>
         </div>
       </div>
       <div class="run">

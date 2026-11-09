@@ -30,6 +30,11 @@ Scenarios save to `.bjev` files (including simulation results); reports export t
 * **Combinatorial engine** (`src/Engine/Combinatorial.cs`, `DealerDag.cs`): exact dealer probabilities with card
   removal for every player two-card hand and upcard (the dealer's draws are enumerated as multisets, so this is fast:
   ~1–3 ms per full analysis), optimal hit/stand/double/split (with resplits)/surrender, total-dependent decisions.
+  Basic strategy itself takes every card the player draws out of the shoe too (hits with the best play after them,
+  doubles, splits), and in peek games the player's draws know that the dealer has no blackjack, so close one- and
+  two-deck plays come out as in the published charts (e.g. double 11 v A with 2 decks S17). Where a total's two-card
+  hands double or surrender, its hit/stand fallback comes from the hands of three or more cards that use it (16 v T
+  with surrender: stand).
   The house edge off the top then plays that strategy exactly, as the simulator does: hits, doubles and split hands
   with full card removal (a split hand with its own cards and the pair cards out of the shoe; leaving the other split
   hands' cards in makes no measurable difference).
@@ -38,17 +43,25 @@ Scenarios save to `.bjev` files (including simulation results); reports export t
   out of the shoe and the rest is estimated by linear regression of the rank counts on the tag sum (red and black
   cards that count differently included), to the composition whose count (with the cards on the table) is that value. The number of unseen cards and their average count in each count bin come
   from the distribution of the count over the shoe. The full analysis of that composition gives the best play at
-  that count. For Hi-Lo, 6 decks S17, all 22 I18 + Fab 4 indices are within one point of the published numbers, which
-  are for unfloored true counts. The simulator floors (TC 0 means 0 to 0.99), so 16 v T, for example, stands from +1.
-  Simulating 18 such plays count by count in 1, 2 and 6 decks gives the generated decision at every count but one
-  borderline one (a 0.05% difference).
+  that count. Its draw odds stay as they are after the first three cards (exact removal at every count would be too
+  slow), so the change that exact removal makes is worked out off the top and carried over to every count, scaled by
+  the cards left. Two more things follow the count: the hands of a total are weighted by how often each comes up at
+  that count (with one deck T,2 is nine in ten of the 12s at Hi-Lo +1), and a total's stand-or-hit also counts its
+  hands of three or more cards, which the simulator plays by the same decision (16 v T stands from 0, as published).
+  Checked against a Monte-Carlo of 180 million one-deck rounds with exact values at the simulator's real decision
+  points: on the 91 index lines tested the generated indices earn 0.269 and 0.106 units per 100 rounds in two games,
+  where version 0.1.3 earned 0.252 and 0.103 (the best possible: 0.287 and 0.112). For Hi-Lo, 6 decks S17, the I18 + Fab 4 indices
+  are within one point of the published numbers, which are for unfloored true counts. The simulator floors (TC 0 means
+  0 to 0.99), so 12 v 2, for example, stands from +4.
 * **Simulator** (`src/Engine/Simulator.cs`): real shoes, all spots, peek/no-peek, insurance, surrender, splits; every
   decision uses the count at that moment. Results are tallied exactly per count bin, so bet ramps never need re-simulation.
 * **Analysis** (`src/Engine/Analysis.cs`): ramp evaluation, multi-hand covariance, ROR (exponential and trip/reflection
   formulas), Kelly/SCORE optimiser.
 
 Validation (`tools/EngineTest.cs`, which exits with code 1 when a check fails): the house edge for 8D, 6D S17 and
-6D H17 (DAS, no surrender) is 0.432%, 0.406% and 0.618%, within 0.03% of published figures (`ca`). For 1 to 8
+6D H17 (DAS, no surrender) is 0.432%, 0.406% and 0.618%, within 0.03% of published figures (`ca`). Basic strategy is
+checked to be the best there is: changing any one decision of any chart cell gains at most 0.0001% of exact expectation
+(`best`, 12 games in about 10 seconds; over 600 rule sets the largest gain was 0.00007%). For 1 to 8
 decks and the other rule variants, single and double deck with resplits and doubling after splits included, 2 billion
 shuffle-every-round rounds per game agree with the off-the-top analysis within 3.5 SE, about 0.009% (`offtop`, about
 3 minutes; in the last run all 11 games were within 0.005%). Random draws of unseen cards agree with the composition
@@ -73,7 +86,7 @@ Output: `dist\CalcBJ.exe`. If a copy is running, the build renames it to `CalcBJ
 * Pages use small custom layout containers (`ArrangePanel`, `VStack`, `FieldGrid`, `TileGrid`) that measure every
   control once; nested auto-size TableLayoutPanels made opening the window take ~6 s.
 
-Tests: `tools\EngineTest.cs` (engine checks: `ca`, `offtop` and `regress` fail with exit code 1, `idx`, `sim`, `misc` print) and `tools\UiTest.cs`
+Tests: `tools\EngineTest.cs` (engine checks: `ca`, `best`, `offtop` and `regress` fail with exit code 1, `idx`, `sim`, `misc` print) and `tools\UiTest.cs`
 (drives the real UI in-process; compile with all `src` files and `/main:UiTest`).
 
 ## Web and desktop version

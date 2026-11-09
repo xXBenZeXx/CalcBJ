@@ -6,29 +6,65 @@ function finite(v: number | null | undefined): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
+function infinite(v: number | null | undefined): boolean {
+  return v === Number.POSITIVE_INFINITY || v === Number.NEGATIVE_INFINITY;
+}
+
 /**
- * Rounds half away from zero on the decimal digits, as the Windows app formats numbers (toFixed works on the binary
- * value and makes 1.005 into 1.00). Never returns -0.
+ * Rounds half away from zero on the decimal digits, as the Windows app formats numbers: .NET takes a double's first 15
+ * significant digits (0.085 for 0.08499999999999999) and rounds those, where toFixed works on the binary value and
+ * makes 1.005 into 1.00. Never returns -0.
  */
 export function round(v: number, decimals: number): number {
   if (!Number.isFinite(v)) return v;
-  const a = Math.abs(v);
+  const a = Number(Math.abs(v).toPrecision(15));
   const s = String(a);
-  const r = s.includes("e") ? Number(a.toFixed(decimals)) : Number(Math.round(Number(s + "e" + decimals)) + "e-" + decimals);
+  let r = a;
+  if (s.includes("e")) r = Number(a.toFixed(Math.min(100, decimals)));
+  else {
+    // A number this large has no decimals left to round (and its string would get an exponent of its own).
+    const scaled = String(Math.round(Number(s + "e" + decimals)));
+    if (!scaled.includes("e")) r = Number(scaled + "e-" + decimals);
+  }
   return v < 0 && r !== 0 ? -r : r;
+}
+
+/**
+ * A positive amount rounded to `decimals` the way the Windows app rounds money (.NET Math.Round, away from zero): on
+ * the binary value times the power of ten, so 1.005 gives 1.00 there and here.
+ */
+function roundAmount(a: number, decimals: number): number {
+  const p = 10 ** decimals;
+  const x = a * p;
+  if (!Number.isFinite(x) || Math.abs(x) >= 1e15) return a;
+  const below = Math.trunc(x);
+  return (x - below >= 0.5 ? below + 1 : below) / p;
 }
 
 export function money(v: number | null): string {
   if (!finite(v)) return "—";
   // Cents first, so $999.996 shows as $1,000 and not $1000.00.
-  const a = round(Math.abs(v), 2);
-  return (v < 0 && a > 0 ? "-$" : "$") + (a >= 1000 ? whole.format(a) : a.toFixed(2));
+  const a = roundAmount(Math.abs(v), 2);
+  return (v < 0 && a > 0 ? "-$" : "$") + (a >= 1000 ? whole.format(round(a, 0)) : a.toFixed(2));
 }
 
 export function money0(v: number | null): string {
   if (!finite(v)) return "—";
-  const a = round(Math.abs(v), 0);
+  const a = roundAmount(Math.abs(v), 0);
   return (v < 0 && a > 0 ? "-$" : "$") + whole.format(a);
+}
+
+/**
+ * A risk of ruin, with enough decimals to tell small ones apart, the same on every page (Windows app: Theme.Ror):
+ * 23.4%, 5.18%, 0.520%, 0.0400%, and "< 0.0001%" below that.
+ */
+export function ror(v: number | null | undefined): string {
+  if (!finite(v)) return "—";
+  const p = v * 100;
+  if (p <= 0) return "0%";
+  if (p < 0.0001) return "< 0.0001%";
+  const d = p >= 10 ? 1 : p >= 1 ? 2 : p >= 0.1 ? 3 : 4;
+  return round(p, d).toFixed(d) + "%";
 }
 
 export function pct(fraction: number | null, decimals: number): string {
@@ -37,24 +73,25 @@ export function pct(fraction: number | null, decimals: number): string {
 
 export function signedPct(fraction: number | null, decimals: number): string {
   if (!finite(fraction)) return "—";
-  const x = round(fraction * 100, decimals);
-  return (x > 0 ? "+" : "") + x.toFixed(decimals) + "%";
+  // The sign is the value's own, as in the Windows app: a gain too small to show still reads "+0.000%".
+  return (fraction > 0 ? "+" : "") + round(fraction * 100, decimals).toFixed(decimals) + "%";
 }
 
-/** Fixed decimals; "∞" for infinity and "—" for missing values. */
+/** Fixed decimals; "∞" for infinity and "—" for missing values (as the Windows app's Theme.F, here and below). */
 export function fixed(v: number | null, decimals: number): string {
-  if (v === Number.POSITIVE_INFINITY) return "∞";
+  if (infinite(v)) return "∞";
   return finite(v) ? round(v, decimals).toFixed(decimals) : "—";
 }
 
 /** Whole number with thousands separators. */
 export function grouped(v: number | null): string {
-  if (v === Number.POSITIVE_INFINITY) return "∞";
-  return finite(v) ? whole.format(v) : "—";
+  if (infinite(v)) return "∞";
+  return finite(v) ? whole.format(round(v, 0)) : "—";
 }
 
 /** Up to `decimals` decimals without trailing zeros (.NET "0.##"). */
 export function trim(v: number, decimals: number): string {
+  if (infinite(v)) return "∞";
   return finite(v) ? String(round(v, decimals)) : "—";
 }
 
@@ -73,7 +110,8 @@ export function snapTag(v: number): number {
 /** "+2", "0", "-1.5": count tags and index values. */
 export function signedTrim(v: number, decimals = 2): string {
   const s = trim(v, decimals);
-  return v > 0 ? "+" + s : s;
+  // No sign on a value that shows as 0, as in the Windows app ("+0.##;-0.##;0").
+  return Number.isFinite(v) && round(v, decimals) > 0 ? "+" + s : s;
 }
 
 export function signed(v: number): string {
@@ -108,6 +146,8 @@ export function parseNumber(text: string): number | null {
   if (comma >= 0 && dot >= 0) s = dot > comma ? s.replace(/,/g, "") : s.replace(/\./g, "").replace(",", ".");
   else if (comma >= 0) s = /^-?[1-9]\d{0,2}(,\d{3})+$/.test(s) ? s.replace(/,/g, "") : s.replace(",", ".");
   else if (/^-?[1-9]\d{0,2}(\.\d{3}){2,}$/.test(s)) s = s.replace(/\./g, "");
+  // Decimal numbers only (Number() would also read "0x10").
+  if (!/^-?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(s)) return null;
   const v = Number(s);
   return Number.isFinite(v) ? v : null;
 }

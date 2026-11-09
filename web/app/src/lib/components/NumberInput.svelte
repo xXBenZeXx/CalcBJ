@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { parseNumber } from "../format";
+  import { parseNumber, round } from "../format";
   import { touchScreen } from "../platform";
 
   /** A number field that commits on Enter or when it loses focus, clamped to [min, max] and rounded to `decimals`. */
@@ -42,10 +42,9 @@
     invalid = false;
   });
 
-  /** Rounded to `decimals` and clamped to [min, max]. */
+  /** Rounded to `decimals` (half away from zero, as the Windows app's number boxes) and clamped to [min, max]. */
   function fit(v: number): number {
-    const f = 10 ** decimals;
-    return Math.min(max, Math.max(min, Math.round(v * f) / f));
+    return Math.min(max, Math.max(min, round(v, decimals)));
   }
 
   function set(v: number) {

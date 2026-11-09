@@ -123,6 +123,10 @@ export interface BinStat {
   cov: number;
   measuredCov: boolean;
   meanVar: number;
+  /** The last seat alone (where the player sits with one hand): mean, E[x²] and the variance of the mean. */
+  meanLast: number;
+  m2Last: number;
+  meanVarLast: number;
 }
 
 /** Non-finite values (N0 of a break-even ramp) arrive as null. */
@@ -187,7 +191,10 @@ export interface CountInfo {
   key: string;
   /** This count's true-count units per Hi-Lo true count. */
   factor: number;
-  bettingCorrelation: number;
+  /** Running-count points per Hi-Lo true count at mid-shoe. */
+  runningPerHiLo: number;
+  /** Null until the effects of removal for the rules are in (see engine.effectsOfRemoval). */
+  bettingCorrelation: number | null;
   insuranceCorrelation: number;
 }
 
@@ -199,6 +206,8 @@ export interface IndexInfo {
   play: string;
   condition: string;
   threshold: number;
+  /** The other end where the condition has two ("from X to Y", "at X or less, and at Y or more"); otherwise null. */
+  other: number | null;
   atOrAbove: boolean;
   irregular: boolean;
   text: string;
@@ -215,6 +224,10 @@ export interface ChartData {
   codes: string[];
   /** EV of stand, hit, double, surrender and split per cell (5 per cell, null where not possible). */
   cellEv: (number | null)[];
+  /** True when the values are given that the dealer has no blackjack (the dealer peeks); otherwise from the deal. */
+  afterPeek: boolean;
+  /** True when the values are basic strategy's (no count chosen, or no index plays in use). */
+  basic: boolean;
 }
 
 export interface RampResult {

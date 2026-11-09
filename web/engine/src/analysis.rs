@@ -21,11 +21,27 @@ pub struct BinStat {
     pub measured_cov: bool,
     /// Variance of the estimate of `mean`.
     pub mean_var: f64,
+    /// Mean, E[x^2] and the variance of the mean of the last seat alone, where the player sits when playing one hand.
+    /// With index plays that seat does a little better than the one beside it, whose cards it has seen (mostly with one
+    /// or two decks). `mean` and `m2` average the two seats, for the rows that play both.
+    pub mean_last: f64,
+    pub m2_last: f64,
+    pub mean_var_last: f64,
 }
 
 impl BinStat {
     pub fn var(&self) -> f64 {
         self.m2 - self.mean * self.mean
+    }
+
+    /// Mean per hand when playing `hands` hands at this count.
+    pub fn mean_for(&self, hands: i32) -> f64 {
+        if hands == 1 { self.mean_last } else { self.mean }
+    }
+
+    /// E[x^2] per hand when playing `hands` hands at this count.
+    pub fn m2_for(&self, hands: i32) -> f64 {
+        if hands == 1 { self.m2_last } else { self.m2 }
     }
 }
 
@@ -81,8 +97,14 @@ impl BetRamp {
         self.units.iter().zip(&self.hands).fold(0.0, |m, (&u, &h)| dmax(m, u * h.max(1) as f64))
     }
 
-    pub fn min_positive_units(&self) -> f64 {
-        let m = self.units.iter().filter(|&&u| u > 0.0).fold(f64::MAX, |m, &u| dmin(m, u));
+    /// Smallest amount on the table in a round that is played: units per hand times hands.
+    pub fn min_bet(&self) -> f64 {
+        let m = self
+            .units
+            .iter()
+            .zip(&self.hands)
+            .filter(|&(&u, _)| u > 0.0)
+            .fold(f64::MAX, |m, (&u, &h)| dmin(m, u * h.max(1) as f64));
         if m == f64::MAX { 0.0 } else { m }
     }
 }
@@ -194,12 +216,18 @@ pub fn bins(d: &SimData) -> Vec<BinStat> {
                     let v = dmax(0.0, b.m2 - b.mean * b.mean);
                     let c = dmax(0.0, b.cov - b.mean * b.mean);
                     b.mean_var = (v + c) / (2.0 * nf);
+                    b.mean_last = d.sa[i] as f64 / (20.0 * nf);
+                    b.m2_last = d.qa[i] as f64 / (400.0 * nf);
+                    b.mean_var_last = dmax(0.0, b.m2_last - b.mean_last * b.mean_last) / nf;
                 } else {
                     b.mean = d.sa[i] as f64 / (20.0 * nf);
                     b.m2 = d.qa[i] as f64 / (400.0 * nf);
                     let v = dmax(0.0, b.m2 - b.mean * b.mean);
                     b.cov = b.mean * b.mean + ASSUMED_CORRELATION * v;
                     b.mean_var = v / nf;
+                    b.mean_last = b.mean;
+                    b.m2_last = b.m2;
+                    b.mean_var_last = b.mean_var;
                 }
             }
             b
@@ -222,6 +250,9 @@ pub fn rows(bins: &[BinStat], ramp: &BetRamp) -> Vec<BinStat> {
         x.m2 += b.freq * b.m2;
         x.cov += b.freq * b.cov;
         x.mean_var += b.freq * b.freq * b.mean_var;
+        x.mean_last += b.freq * b.mean_last;
+        x.m2_last += b.freq * b.m2_last;
+        x.mean_var_last += b.freq * b.freq * b.mean_var_last;
         x.measured_cov = b.measured_cov;
     }
     for x in &mut r {
@@ -230,6 +261,9 @@ pub fn rows(bins: &[BinStat], ramp: &BetRamp) -> Vec<BinStat> {
             x.m2 /= x.freq;
             x.cov /= x.freq;
             x.mean_var /= x.freq * x.freq;
+            x.mean_last /= x.freq;
+            x.m2_last /= x.freq;
+            x.mean_var_last /= x.freq * x.freq;
         }
     }
     r
@@ -246,12 +280,14 @@ pub fn evaluate(d: &SimData, ramp: &BetRamp, unit: f64, rounds_per_hour: f64, ba
     res.row_n = vec![0; nr];
     let (mut ev, mut m2, mut bet, mut played, mut se_var) = (0.0, 0.0, 0.0, 0.0, 0.0);
     for (i, x) in rows.iter().enumerate() {
-        res.row_freq[i] = x.freq;
-        res.row_ev[i] = x.mean;
-        res.row_n[i] = x.n;
-        res.row_m2[i] = x.m2;
         let u = ramp.units[i];
         let h = ramp.hands[i].max(1);
+        // One hand is the last seat's; two hands are the last two seats (see `BinStat::mean_last`).
+        let (mean, hm2) = (x.mean_for(h), x.m2_for(h));
+        res.row_freq[i] = x.freq;
+        res.row_ev[i] = mean;
+        res.row_n[i] = x.n;
+        res.row_m2[i] = hm2;
         if u <= 0.0 || x.freq <= 0.0 {
             continue;
         }
@@ -259,14 +295,14 @@ pub fn evaluate(d: &SimData, ramp: &BetRamp, unit: f64, rounds_per_hour: f64, ba
             res.used_assumed_cov = true;
         }
         let hf = h as f64;
-        let e = hf * u * x.mean;
-        let q = u * u * (hf * x.m2 + (h * (h - 1)) as f64 * x.cov);
+        let e = hf * u * mean;
+        let q = u * u * (hf * hm2 + (h * (h - 1)) as f64 * x.cov);
         ev += x.freq * e;
         m2 += x.freq * q;
         bet += x.freq * hf * u;
         played += x.freq;
         res.row_contribution[i] = x.freq * e;
-        se_var += x.freq * x.freq * hf * hf * u * u * x.mean_var;
+        se_var += x.freq * x.freq * hf * hf * u * u * if h == 1 { x.mean_var_last } else { x.mean_var };
     }
     if bet <= 0.0 {
         return res;
@@ -294,7 +330,7 @@ pub fn evaluate(d: &SimData, ramp: &BetRamp, unit: f64, rounds_per_hour: f64, ba
     res.ror = if ev > 0.0 { (-2.0 * ev * b_u / res.var).exp() } else { 1.0 };
     res.ce_per_hour = (ev - res.var / (2.0 * b_u)) * rounds_per_hour * unit;
     res.kelly_unit = if ev > 0.0 { bankroll * ev / m2 } else { 0.0 };
-    let (mx, mn) = (ramp.max_bet(), ramp.min_positive_units());
+    let (mx, mn) = (ramp.max_bet(), ramp.min_bet());
     res.spread = if mn > 0.0 { mx / mn } else { 0.0 };
     res
 }
@@ -410,7 +446,7 @@ fn row_gain(x: &BinStat, b: f64, h: i32, lambda: f64) -> f64 {
         return 0.0;
     }
     let hf = h as f64;
-    x.freq * (hf * b * x.mean - b * b * (hf * x.m2 + (h * (h - 1)) as f64 * x.cov) / (2.0 * lambda))
+    x.freq * (hf * b * x.mean_for(h) - b * b * (hf * x.m2_for(h) + (h * (h - 1)) as f64 * x.cov) / (2.0 * lambda))
 }
 
 fn best_bet(x: &BinStat, os: &OptimizerSettings, lambda: f64) -> (f64, i32) {
@@ -422,22 +458,25 @@ fn best_bet(x: &BinStat, os: &OptimizerSettings, lambda: f64) -> (f64, i32) {
     let mut best_g = if os.allow_wong_out { 0.0 } else { row_gain(x, os.min_units, 1, lambda) };
     let max_h = os.max_hands.max(1);
     let inc = if os.increment > 0.0 { os.increment } else { 0.01 };
+    // A bet is the minimum or a multiple of the increment above it, up to the maximum: multiples k_lo to k_hi. The
+    // minimum itself needn't be a multiple (2.5 units with steps of 1).
+    let k_lo = (os.min_units / inc + 1e-9).floor() + 1.0;
+    let k_hi = (os.max_units / inc + 1e-9).floor();
     for h in 1..=max_h {
-        let denom = x.m2 + (h - 1) as f64 * x.cov;
+        let denom = x.m2_for(h) + (h - 1) as f64 * x.cov;
         if denom <= 0.0 {
             continue;
         }
-        let raw = lambda * x.mean / denom;
-        let lo = (raw / inc).floor() * inc;
-        let hi = lo + inc;
-        for c0 in [os.min_units, os.max_units, lo, hi] {
-            let mut c = dmax(os.min_units, dmin(os.max_units, c0));
-            c = (c / inc).round_ties_even() * inc;
-            if c < os.min_units - 1e-9 {
-                c += inc;
-            }
-            if c > os.max_units + 1e-9 {
-                c -= inc;
+        // The gain falls off either side of the unconstrained best bet, so the best allowed bet is the minimum or one
+        // of the multiples next to it.
+        let k = (lambda * x.mean_for(h) / denom / inc).floor();
+        for j in 0..3 {
+            let mut c = os.min_units;
+            if j > 0 {
+                if k_hi < k_lo {
+                    break; // no multiple of the increment between the minimum and the maximum
+                }
+                c = dmax(k_lo, dmin(k_hi, k + (j - 1) as f64)) * inc;
             }
             let g = row_gain(x, c, h, lambda);
             if g > best_g + 1e-15 {
@@ -469,8 +508,8 @@ fn score_of(rows: &[BinStat], r: &BetRamp) -> f64 {
             continue;
         }
         let hf = h as f64;
-        ev += x.freq * hf * u * x.mean;
-        m2 += x.freq * u * u * (hf * x.m2 + (h * (h - 1)) as f64 * x.cov);
+        ev += x.freq * hf * u * x.mean_for(h);
+        m2 += x.freq * u * u * (hf * x.m2_for(h) + (h * (h - 1)) as f64 * x.cov);
     }
     let v = m2 - ev * ev;
     if v <= 0.0 || ev <= 0.0 {

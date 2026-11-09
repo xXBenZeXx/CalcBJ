@@ -19,12 +19,38 @@
     return PAYOUTS.find(([v]) => Math.abs(v - p) < 1e-9)?.[1] ?? trim(p, 2) + ":1";
   }
 
+  /** The list, plus the payout in use when it isn't one of them (it can come from a scenario file). */
+  let payouts = $derived(
+    PAYOUTS.some(([v]) => Math.abs(v - app.rules.blackjackPays) < 1e-9)
+      ? PAYOUTS
+      : [...PAYOUTS, [app.rules.blackjackPays, payoutText(app.rules.blackjackPays)] as [number, string]],
+  );
+
   let info = $derived(engine.rulesInfo(app.rules, app.spots));
   let ev = $derived(engine.houseEdge(app.rules));
-  let effects = $derived(ruleEffects($state.snapshot(app.rules), ev));
 
-  /** Player expectation if only one rule were different. */
-  function ruleEffects(r: Rules, base: number) {
+  // Player expectation if only one rule were different. Some twenty games take about a second to work out: a worker
+  // does that, and each row is filled in when its value is there (null until then).
+  let effects = $state.raw<{ label: string; ev: number | null; delta: number | null }[]>([]);
+  $effect(() => {
+    const base = ev;
+    const rows = ruleVariants($state.snapshot(app.rules));
+    const show = (values: (number | null)[]) => {
+      effects = rows.map(([label], i) => {
+        const e = values[i];
+        return { label, ev: e, delta: e === null ? null : e - base };
+      });
+    };
+    const job = engine.houseEdges(
+      rows.map(([, rules]) => rules),
+      show,
+    );
+    show(job.known);
+    return job.cancel;
+  });
+
+  /** The rules with one of them different, each with what changed. */
+  function ruleVariants(r: Rules): [string, Rules][] {
     const rows: [string, Rules][] = [];
     const add = (label: string, change: Partial<Rules>) => rows.push([label, { ...r, ...change }]);
     add(r.h17 ? "Dealer stands on soft 17" : "Dealer hits soft 17", { h17: !r.h17 });
@@ -53,16 +79,14 @@
       ["ENHC_OBO", "No hole card, OBO"],
     ];
     for (const [h, label] of holes) if (h !== r.holeCard) add(label, { holeCard: h });
-    return rows.map(([label, rules]) => {
-      const e = engine.houseEdge(rules);
-      return { label, ev: e, delta: e - base };
-    });
+    return rows;
   }
 
-  function setDecks(d: number) {
-    if (d === app.rules.decks) return;
-    app.rules.decks = d;
-    app.decksChanged();
+  /** Decks and penetration move what a running count (or an unbalanced one) means: the ramp follows. */
+  function setShoe(change: { decks?: number; penetration?: number }) {
+    const old = $state.snapshot(app.rules);
+    Object.assign(app.rules, change);
+    app.rulesChanged(old);
   }
 </script>
 
@@ -71,7 +95,7 @@
     <Card title="Shoe">
       <div class="fields">
         <Field label="Number of decks">
-          <select value={app.rules.decks} onchange={(e) => setDecks(Number(e.currentTarget.value))}>
+          <select value={app.rules.decks} onchange={(e) => setShoe({ decks: Number(e.currentTarget.value) })}>
             {#each [1, 2, 3, 4, 5, 6, 7, 8] as d (d)}<option value={d}>{d}</option>{/each}
           </select>
         </Field>
@@ -82,7 +106,7 @@
             max={95}
             decimals={1}
             width="5.5em"
-            onchange={(v) => (app.rules.penetration = v / 100)}
+            onchange={(v) => setShoe({ penetration: v / 100 })}
           />
         </Field>
         <p class="note">
@@ -116,7 +140,7 @@
       <div class="fields">
         <Field label="Blackjack pays">
           <select bind:value={app.rules.blackjackPays}>
-            {#each PAYOUTS as [v, label] (v)}<option value={v}>{label}</option>{/each}
+            {#each payouts as [v, label] (v)}<option value={v}>{label}</option>{/each}
           </select>
         </Field>
         <Field label="Double down on">
@@ -180,7 +204,10 @@
         </p>
       {:else}
         <p class="huge good">+{pct(ev, 3)}</p>
-        <p class="note">Player edge for perfect basic strategy off the top — this game is beatable without counting.</p>
+        <p class="note">
+          Player edge for a perfect basic-strategy player on the first round of a fresh shoe. With a cut card a flat bet
+          does a little worse than that (about 0.1% with one deck): simulate basic strategy to see it.
+        </p>
       {/if}
     </Card>
 
@@ -195,14 +222,14 @@
             {#each effects as e (e.label)}
               <tr>
                 <td>{e.label}</td>
-                <td class="num">{signedPct(e.ev, 3)}</td>
+                <td class="num">{e.ev === null ? "…" : signedPct(e.ev, 3)}</td>
                 <td
                   class="num strong"
-                  class:good={e.delta > 0.00005}
-                  class:bad={e.delta < -0.00005}
-                  class:muted={Math.abs(e.delta) <= 0.00005}
+                  class:good={e.delta !== null && e.delta > 0.00005}
+                  class:bad={e.delta !== null && e.delta < -0.00005}
+                  class:muted={e.delta === null || Math.abs(e.delta) <= 0.00005}
                 >
-                  {signedPct(e.delta, 3)}
+                  {e.delta === null ? "…" : signedPct(e.delta, 3)}
                 </td>
               </tr>
             {/each}

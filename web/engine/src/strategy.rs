@@ -2,7 +2,8 @@
 //!
 //! Cell layout per count bin: hard totals [0..=21] x 10 upcards, soft totals [0..=21] x 10, pairs [A..=T] x 10.
 
-use crate::ca::{CaEngine, CaResult, CountModel, flag, full_shoe};
+use crate::analysis::phi;
+use crate::ca::{CaEngine, CaResult, CountModel, ExactAdjust, basic_for, flag, full_shoe};
 use crate::num::dmax;
 use crate::sim::metric_value;
 use crate::types::{
@@ -78,6 +79,9 @@ pub struct IndexInfo {
     pub play: String,
     pub condition: String,
     pub threshold: f64,
+    /// The other end where the condition has two: the last count of "from X to Y", or the count from which "at X or
+    /// less, and at Y or more" applies again. NaN otherwise.
+    pub other: f64,
     pub at_or_above: bool,
     pub irregular: bool,
 }
@@ -194,9 +198,9 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
     let mut insure = vec![false; NUM_BINS];
     let mut bin_tc_eq = vec![f64::NAN; NUM_BINS];
 
-    let mut engine = CaEngine::new(rules);
-    let mut basic_result = engine.evaluate(&full_shoe(rules.decks as f64));
-    basic_result.player_ev = engine.exact_off_top(&basic_result);
+    let engine = CaEngine::new(rules);
+    let (mut basic_result, adj, off_top) = basic_for(rules);
+    basic_result.player_ev = off_top;
 
     // The C# version takes min/max of the range and clamps each end once; clamping both ends here as well keeps a
     // range that lies entirely outside the bins usable instead of failing.
@@ -220,21 +224,41 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
         let total_tags = cs.imbalance_per_deck() * rules.decks as f64;
         let irc = cs.irc(rules.decks);
         let (unseen, unseen_mean) = bin_moments(rules, cs);
+        let (table_weight, table_min, table_step, code_tags) = table_weights(rules, cs);
         // The count when the player decides includes the upcard and their cards (see CountModel).
         let models: Vec<CountModel> = (lo..=hi)
             .map(|v| {
                 let b = (v - BIN_MIN) as usize;
                 if !unseen[b].is_nan() {
-                    CountModel { tags, tag_var, unseen: unseen[b], unseen_tags: unseen_mean[b] * unseen[b] }
+                    CountModel {
+                        tags,
+                        tag_var,
+                        unseen: unseen[b],
+                        unseen_tags: unseen_mean[b] * unseen[b],
+                        table_weight: table_weight[b].clone(),
+                        table_min,
+                        table_step,
+                        code_tags,
+                    }
                 } else {
                     // A count this game never reaches: extend from the bin's representative value at mid depth.
                     let rep = representative(cs, v);
                     let rc = if cs.metric == CountMetric::TrueCount { rep * d_mid } else { rep };
-                    CountModel { tags, tag_var, unseen: 52.0 * d_mid, unseen_tags: total_tags - (rc - irc) }
+                    CountModel {
+                        tags,
+                        tag_var,
+                        unseen: 52.0 * d_mid,
+                        unseen_tags: total_tags - (rc - irc),
+                        table_weight: None,
+                        table_min,
+                        table_step,
+                        code_tags,
+                    }
                 }
             })
             .collect();
-        Some(evaluate_all(rules, &full_shoe(rules.decks as f64), &models, engine))
+        // The exact-removal corrections of basic strategy carry over to every count.
+        Some(evaluate_all(rules, &full_shoe(rules.decks as f64), &models, &adj, engine))
     } else {
         None
     };
@@ -289,11 +313,17 @@ pub fn build(rules: &Rules, cs: &CountSystem, sc: &StrategyConfig) -> PlayTable 
 
 /// Runs the analysis for every count model, on all cores where threads exist (the results do not depend on it).
 #[cfg(not(target_arch = "wasm32"))]
-fn evaluate_all(rules: &Rules, full: &[f64; 11], models: &[CountModel], engine: CaEngine) -> Vec<CaResult> {
+fn evaluate_all(
+    rules: &Rules,
+    full: &[f64; 11],
+    models: &[CountModel],
+    adj: &ExactAdjust,
+    engine: CaEngine,
+) -> Vec<CaResult> {
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(models.len()).max(1);
     if threads == 1 {
         let mut engine = engine;
-        return models.iter().map(|m| engine.evaluate_with(full, Some(m))).collect();
+        return models.iter().map(|m| engine.evaluate_adj(full, Some(m), Some(adj))).collect();
     }
     let per = models.len().div_ceil(threads);
     std::thread::scope(|scope| {
@@ -302,7 +332,7 @@ fn evaluate_all(rules: &Rules, full: &[f64; 11], models: &[CountModel], engine: 
             .map(|part| {
                 scope.spawn(move || {
                     let mut engine = CaEngine::new(rules);
-                    part.iter().map(|m| engine.evaluate_with(full, Some(m))).collect::<Vec<_>>()
+                    part.iter().map(|m| engine.evaluate_adj(full, Some(m), Some(adj))).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -311,8 +341,116 @@ fn evaluate_all(rules: &Rules, full: &[f64; 11], models: &[CountModel], engine: 
 }
 
 #[cfg(target_arch = "wasm32")]
-fn evaluate_all(_rules: &Rules, full: &[f64; 11], models: &[CountModel], mut engine: CaEngine) -> Vec<CaResult> {
-    models.iter().map(|m| engine.evaluate_with(full, Some(m))).collect()
+fn evaluate_all(
+    _rules: &Rules,
+    full: &[f64; 11],
+    models: &[CountModel],
+    adj: &ExactAdjust,
+    mut engine: CaEngine,
+) -> Vec<CaResult> {
+    models.iter().map(|m| engine.evaluate_adj(full, Some(m), Some(adj))).collect()
+}
+
+/// For each count bin, how likely it is with each tag sum of the three cards on the table, which the count includes
+/// (`CountModel::table_weight`; `None` for a bin that doesn't occur), then the smallest sum, the step between the sums
+/// an entry stands for (1 unless the tags are very fine) and the scaled tags per card code (C#: TableWeights). The
+/// decisions are spread over the shoe as in `bin_moments`. At each depth the tag sum of the other seen cards is taken
+/// as normal, with the mean and spread of cards drawn from the shoe without the three on the table, and binned exactly
+/// as the simulator bins the count.
+pub fn table_weights(rules: &Rules, cs: &CountSystem) -> (Vec<Option<Vec<f64>>>, i32, i32, [i32; 20]) {
+    let n_total = rules.total_cards();
+    let scale = cs.scale();
+    let irc = (cs.irc(rules.decks) * scale as f64).round_ties_even() as i32;
+    let mut code_tags = [0i32; 20];
+    let (mut mu, mut m2) = (0.0, 0.0);
+    let (mut t_min, mut t_max) = (i32::MAX, i32::MIN);
+    for (code, tag) in code_tags.iter_mut().enumerate() {
+        let rank = (code >> 1) + 1;
+        let share = (if rank == 10 { 8.0 } else { 2.0 }) / 52.0;
+        let t = (cs.tag_of_code(code) * scale as f64).round_ties_even();
+        *tag = t as i32;
+        mu += share * t;
+        m2 += share * t * t;
+        t_min = t_min.min(*tag);
+        t_max = t_max.max(*tag);
+    }
+    let var1 = m2 - mu * mu;
+    let total = mu * n_total as f64;
+    let table_min = 3 * t_min;
+    let span = 3 * (t_max - t_min) + 1;
+    let step = (span + 63) / 64;
+    let nj = ((span + step - 1) / step) as usize;
+    let mut w: Vec<Option<Vec<f64>>> = vec![None; NUM_BINS];
+    let last = 3.max((n_total - 2).min((n_total as f64 * rules.penetration).round_ties_even() as i32));
+    let nf = n_total as f64;
+    let mut seg: Vec<(usize, i32)> = Vec::with_capacity(NUM_BINS + 2);
+    let mut cdf = vec![0.0; NUM_BINS + 3];
+    for k in 3..=last {
+        let (n, m) = (n_total - k, (k - 3) as f64);
+        let sd = dmax(0.0, m * var1 * (n_total - k) as f64 / dmax(1.0, nf - 4.0)).sqrt();
+        // The sums the seen cards can reasonably have at this depth, cut into runs of one bin each (the bin rises with
+        // the sum).
+        let mean_lo = m * (total - 3.0 * t_max as f64) / (nf - 3.0);
+        let mean_hi = m * (total - 3.0 * t_min as f64) / (nf - 3.0);
+        let s_lo = 3 * t_min + (mean_lo - 8.0 * sd).floor() as i32;
+        let s_hi = 3 * t_max + (mean_hi + 8.0 * sd).ceil() as i32;
+        seg.clear();
+        for s in s_lo..=s_hi {
+            // The hole card is dealt but unseen, as in `bin_moments`.
+            let b = (metric_value(cs, scale, irc + s, n - 1).clamp(BIN_MIN, BIN_MAX) - BIN_MIN) as usize;
+            if seg.last().is_some_and(|&(last_bin, _)| last_bin == b) {
+                continue;
+            }
+            if seg.len() == NUM_BINS + 2 {
+                break;
+            }
+            seg.push((b, s));
+        }
+        let segs = seg.len();
+        for ji in 0..nj {
+            let j = (table_min + ji as i32 * step + (step - 1) / 2) as f64;
+            // All seen cards: the three on the table and m more out of the other N - 3.
+            let mean = j + m * (total - j) / (nf - 3.0);
+            // cdf[g]: chance of a sum below run g; the first run takes everything below it, the last everything above.
+            cdf[0] = 0.0;
+            cdf[segs] = 1.0;
+            for g in 1..segs {
+                let edge = seg[g].1 as f64 - 0.5;
+                cdf[g] = if sd > 0.0 {
+                    phi((edge - mean) / sd)
+                } else if mean < edge {
+                    1.0
+                } else {
+                    0.0
+                };
+            }
+            for g in 0..segs {
+                let mut p = cdf[g + 1] - cdf[g];
+                // Far above the mean the difference of two values near 1 loses its digits: use the upper tails.
+                if sd > 0.0 && g > 0 && cdf[g] > 0.5 {
+                    let upper = if g + 1 < segs { phi(-(seg[g + 1].1 as f64 - 0.5 - mean) / sd) } else { 0.0 };
+                    p = phi(-(seg[g].1 as f64 - 0.5 - mean) / sd) - upper;
+                }
+                if p <= 0.0 {
+                    continue;
+                }
+                w[seg[g].0].get_or_insert_with(|| vec![0.0; nj])[ji] += p;
+            }
+        }
+    }
+    for slot in &mut w {
+        if let Some(v) = slot {
+            let max = v.iter().fold(0.0, |m, &x| if x > m { x } else { m });
+            if max <= 0.0 {
+                *slot = None;
+            } else {
+                for x in v.iter_mut() {
+                    *x /= max;
+                }
+            }
+        }
+    }
+    (w, table_min, step, code_tags)
 }
 
 /// Where the decisions of each count bin fall in the shoe: the expected number of unseen cards and the expected
@@ -531,7 +669,8 @@ fn describe(
     if count == 0 {
         return;
     }
-    let (at_or_above, threshold, condition) = if max_d == hi && (min_d != lo || min_d > 0) {
+    let mut other = f64::NAN;
+    let (at_or_above, threshold, condition) = if max_d == hi && (min_d != lo || (min_d > 0 && count == hi - lo + 1)) {
         (true, min_d, format!("at {} or more", signed(min_d)))
     } else if min_d == lo && max_d != hi {
         (false, max_d, format!("at {} or less", signed(max_d)))
@@ -548,8 +687,10 @@ fn describe(
         while high_start > lo && deviates(high_start - 1) {
             high_start -= 1;
         }
+        other = high_start as f64;
         (false, low_end, format!("at {} or less, and at {} or more", signed(low_end), signed(high_start)))
     } else {
+        other = max_d as f64;
         (true, min_d, format!("from {} to {}", signed(min_d), signed(max_d)))
     };
     list.push(IndexInfo {
@@ -560,6 +701,7 @@ fn describe(
         play: play_name(mask, !basic).to_string(),
         condition,
         threshold: threshold as f64,
+        other,
         at_or_above,
         irregular: count != max_d - min_d + 1 || (min_d != lo && max_d != hi),
     });
@@ -567,6 +709,8 @@ fn describe(
 
 /// Lists every decision that differs from basic strategy somewhere in [lo, hi].
 pub fn describe_indices(pt: &PlayTable, lo: i32, hi: i32) -> Vec<IndexInfo> {
+    // The same range as `build`'s: the ends in either order, inside the bins.
+    let (lo, hi) = (lo.min(hi).clamp(BIN_MIN, BIN_MAX), lo.max(hi).clamp(BIN_MIN, BIN_MAX));
     let mut list = Vec::new();
     let mut min_d = i32::MAX;
     let mut count = 0;
@@ -585,6 +729,7 @@ pub fn describe_indices(pt: &PlayTable, lo: i32, hi: i32) -> Vec<IndexInfo> {
             play: "Insure".to_string(),
             condition: format!("at {} or more", signed(min_d)),
             threshold: min_d as f64,
+            other: f64::NAN,
             at_or_above: true,
             irregular: false,
         });

@@ -210,7 +210,8 @@ pub fn metric_value(cs: &CountSystem, scale: i32, rc_scaled: i32, cards_remainin
     let tc = rc_scaled as f64 / (scale as f64 * estimate_decks(cs.deck_est, cards_remaining));
     match cs.rounding {
         TcRounding::Truncate => (tc + if tc >= 0.0 { 1e-9 } else { -1e-9 }) as i32,
-        TcRounding::Round => tc.round() as i32,
+        // The same guard as the other two: an exact half (27 / (216 / 52) = 6.5) may come out a hair below it.
+        TcRounding::Round => (tc + if tc >= 0.0 { 1e-9 } else { -1e-9 }).round() as i32,
         TcRounding::Floor => (tc + 1e-9).floor() as i32,
     }
 }
@@ -297,6 +298,8 @@ pub struct SimWorker {
     ins_on: bool,
     late_surr: bool,
     insure: Vec<bool>,
+    count: CountSystem,
+    scale: i32,
     shoe: Vec<i32>,
     base_shoe: Vec<i32>,
     scratch: Vec<i32>,
@@ -364,7 +367,7 @@ impl SimWorker {
             n_cards,
             cut: r.cut_card(spots as i32),
             spots,
-            max_hands: r.max_split_hands.clamp(1, MAXH as i32) as usize,
+            max_hands: r.max_split_hands.clamp(1, crate::types::MAX_SPLIT_LIMIT) as usize,
             rc_min: plan.bins.rc_min,
             rc_max: plan.bins.rc_max,
             irc: round_even_i32(cs.irc(r.decks) * scale as f64),
@@ -388,6 +391,8 @@ impl SimWorker {
             ins_on: r.insurance,
             late_surr: r.surrender == SurrenderRule::Late,
             insure: plan.insure.clone(),
+            count: cs.clone(),
+            scale,
             shoe: base_shoe.clone(),
             scratch: vec![0; n_cards as usize],
             base_shoe,
@@ -513,8 +518,18 @@ impl SimWorker {
     #[inline]
     fn bin(&self) -> usize {
         let cr = (self.n_cards - self.pos).max(0);
-        let r = self.rc.clamp(self.rc_min, self.rc_max);
+        let r = self.rc;
+        if r < self.rc_min || r > self.rc_max {
+            return self.outside_bin(r, cr);
+        }
         self.bin_rows[(self.cr_row[cr as usize] + (r - self.rc_min)) as usize] as usize
+    }
+
+    /// The bin of a running count the table doesn't hold. The table stops at 4000 scaled units either side; only
+    /// custom counts with very fine tags (thirds and twentieths mixed) and many decks get beyond it.
+    #[cold]
+    fn outside_bin(&self, r: i32, cr: i32) -> usize {
+        (metric_value(&self.count, self.scale, r, cr).clamp(BIN_MIN, BIN_MAX) - BIN_MIN) as usize
     }
 
     /// Decision flags for a cell at the current count; cells without index plays skip the count lookup.

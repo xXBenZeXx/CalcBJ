@@ -59,6 +59,11 @@ namespace CalcBJ.Engine
         public string Play;
         public string Condition;
         public double Threshold;
+        /// <summary>
+        /// The other end where the condition has two: the last count of "from X to Y", or the count from which "at X or
+        /// less, and at Y or more" applies again. NaN otherwise.
+        /// </summary>
+        public double Other = double.NaN;
         public bool AtOrAbove;
         public bool Irregular;
         public string Text { get { return Play + " " + Condition; } }
@@ -180,6 +185,99 @@ namespace CalcBJ.Engine
             }
         }
 
+        /// <summary>
+        /// For each count bin, how likely it is with each tag sum of the three cards on the table, which the count
+        /// includes (CountModel.TableWeight; null for a bin that doesn't occur). The decisions are spread over the shoe
+        /// as in BinMoments. At each depth the tag sum of the other seen cards is taken as normal, with the mean and
+        /// spread of cards drawn from the shoe without the three on the table, and binned exactly as the simulator bins
+        /// the count. tableMin and step say which sums an entry stands for (step is 1 unless the tags are very fine).
+        /// </summary>
+        public static double[][] TableWeights(Rules rules, CountSystem cs, out int tableMin, out int step, out int[] codeTags)
+        {
+            int N = rules.TotalCards;
+            int scale = cs.Scale();
+            int irc = (int)Math.Round(cs.Irc(rules.Decks) * scale);
+            codeTags = new int[20];
+            double mu = 0, m2 = 0;
+            int tMin = int.MaxValue, tMax = int.MinValue;
+            for (int code = 0; code < 20; code++)
+            {
+                int rank = (code >> 1) + 1;
+                double share = (rank == 10 ? 8.0 : 2.0) / 52.0;
+                int t = (int)Math.Round(cs.TagOfCode(code) * scale);
+                codeTags[code] = t;
+                mu += share * t;
+                m2 += share * t * t;
+                if (t < tMin) tMin = t;
+                if (t > tMax) tMax = t;
+            }
+            double var1 = m2 - mu * mu;
+            double total = mu * N;
+            tableMin = 3 * tMin;
+            int span = 3 * (tMax - tMin) + 1;
+            step = (span + 63) / 64;
+            int nj = (span + step - 1) / step;
+            var w = new double[PlayTable.NumBins][];
+            int last = Math.Max(3, Math.Min(N - 2, (int)Math.Round(N * rules.Penetration)));
+            var segBin = new int[PlayTable.NumBins + 2];
+            var segStart = new int[PlayTable.NumBins + 2];
+            var cdf = new double[PlayTable.NumBins + 3];
+            for (int k = 3; k <= last; k++)
+            {
+                int n = N - k, m = k - 3;
+                double sd = Math.Sqrt(Math.Max(0, m * var1 * (N - k) / Math.Max(1.0, N - 4.0)));
+                // The sums the seen cards can reasonably have at this depth, cut into runs of one bin each (the bin
+                // rises with the sum).
+                double meanLo = m * (total - 3.0 * tMax) / (N - 3.0), meanHi = m * (total - 3.0 * tMin) / (N - 3.0);
+                int sLo = 3 * tMin + (int)Math.Floor(meanLo - 8 * sd), sHi = 3 * tMax + (int)Math.Ceiling(meanHi + 8 * sd);
+                int segs = 0;
+                for (int s = sLo; s <= sHi; s++)
+                {
+                    // The hole card is dealt but unseen, as in BinMoments.
+                    int v = Simulator.MetricValue(cs, scale, irc + s, n - 1);
+                    if (v < PlayTable.BinMin) v = PlayTable.BinMin; else if (v > PlayTable.BinMax) v = PlayTable.BinMax;
+                    int b = v - PlayTable.BinMin;
+                    if (segs > 0 && segBin[segs - 1] == b) continue;
+                    if (segs == segBin.Length) break;
+                    segBin[segs] = b; segStart[segs] = s; segs++;
+                }
+                for (int ji = 0; ji < nj; ji++)
+                {
+                    int j = tableMin + ji * step + (step - 1) / 2;
+                    // All seen cards: the three on the table and m more out of the other N - 3.
+                    double mean = j + m * (total - j) / (N - 3.0);
+                    // cdf[g]: chance of a sum below run g; the first run takes everything below it, the last everything above.
+                    cdf[0] = 0;
+                    cdf[segs] = 1;
+                    for (int g = 1; g < segs; g++)
+                    {
+                        double edge = segStart[g] - 0.5;
+                        cdf[g] = sd > 0 ? Analysis.Phi((edge - mean) / sd) : (mean < edge ? 1 : 0);
+                    }
+                    for (int g = 0; g < segs; g++)
+                    {
+                        double p = cdf[g + 1] - cdf[g];
+                        // Far above the mean the difference of two values near 1 loses its digits: use the upper tails.
+                        if (sd > 0 && g > 0 && cdf[g] > 0.5)
+                            p = Analysis.Phi(-(segStart[g] - 0.5 - mean) / sd) - (g + 1 < segs ? Analysis.Phi(-(segStart[g + 1] - 0.5 - mean) / sd) : 0);
+                        if (p <= 0) continue;
+                        int b = segBin[g];
+                        if (w[b] == null) w[b] = new double[nj];
+                        w[b][ji] += p;
+                    }
+                }
+            }
+            for (int b = 0; b < PlayTable.NumBins; b++)
+            {
+                if (w[b] == null) continue;
+                double max = 0;
+                foreach (double x in w[b]) if (x > max) max = x;
+                if (max <= 0) { w[b] = null; continue; }
+                for (int i = 0; i < nj; i++) w[b][i] /= max;
+            }
+            return w;
+        }
+
         /// <summary>Converts a betting/playing count value to the balanced-equivalent true count at mid depth.</summary>
         public static double TcEquivalent(CountSystem cs, Rules r, double metricValue)
         {
@@ -237,9 +335,10 @@ namespace CalcBJ.Engine
             pt.BinTcEq = new double[PlayTable.NumBins];
             for (int i = 0; i < PlayTable.NumBins; i++) pt.BinTcEq[i] = double.NaN;
 
-            var basicEngine = new CAEngine(rules);
-            pt.BasicResult = basicEngine.Evaluate(CAEngine.FullShoe(rules.Decks));
-            pt.BasicResult.PlayerEV = basicEngine.ExactOffTop(pt.BasicResult);
+            ExactAdjust adj;
+            double offTop;
+            pt.BasicResult = CAEngine.BasicFor(rules, out adj, out offTop);
+            pt.BasicResult.PlayerEV = offTop;
             pt.Basic = pt.BasicResult.Flags;
 
             int lo = Math.Max(PlayTable.BinMin, Math.Min(sc.IndexMin, sc.IndexMax));
@@ -268,6 +367,9 @@ namespace CalcBJ.Engine
                 var unseen = new double[PlayTable.NumBins];
                 var unseenMean = new double[PlayTable.NumBins];
                 BinMoments(rules, cs, unseen, unseenMean);
+                int tableMin, tableStep;
+                int[] codeTags;
+                double[][] tableWeight = TableWeights(rules, cs, out tableMin, out tableStep, out codeTags);
                 Parallel.For(0, span, () => new CAEngine(rules), (i, state, eng) =>
                 {
                     // The count when the player decides includes the upcard and their cards (see CountModel).
@@ -279,6 +381,8 @@ namespace CalcBJ.Engine
                     {
                         model.Unseen = unseen[b];
                         model.UnseenTags = unseenMean[b] * unseen[b];
+                        model.TableWeight = tableWeight[b];
+                        model.TableMin = tableMin; model.TableStep = tableStep; model.CodeTags = codeTags;
                     }
                     else
                     {
@@ -288,7 +392,8 @@ namespace CalcBJ.Engine
                         model.Unseen = 52 * dMid;
                         model.UnseenTags = totalTags - (rc - irc);
                     }
-                    perBin[i] = eng.Evaluate(full, model);
+                    // The exact-removal corrections of basic strategy carry over to every count.
+                    perBin[i] = eng.Evaluate(full, model, adj);
                     return eng;
                 }, eng => { });
                 pt.PerBin = perBin;
@@ -418,7 +523,7 @@ namespace CalcBJ.Engine
             info.Hand = HandName(kind, total) + " v " + Cards.RankName(up);
             info.Play = PlayName(mask, !basic);
             info.Irregular = count != maxD - minD + 1 || (minD != lo && maxD != hi);
-            if (maxD == hi && (minD != lo || minD > 0))
+            if (maxD == hi && (minD != lo || (minD > 0 && count == hi - lo + 1)))
             {
                 info.AtOrAbove = true; info.Threshold = minD; info.Condition = "at " + Signed(minD) + " or more";
             }
@@ -436,12 +541,12 @@ namespace CalcBJ.Engine
                 int lowEnd = lo, highStart = hi;
                 while (lowEnd + 1 <= hi && (pt.FlagsAt(lowEnd + 1, cell) & mask) != 0 != basic) lowEnd++;
                 while (highStart - 1 >= lo && (pt.FlagsAt(highStart - 1, cell) & mask) != 0 != basic) highStart--;
-                info.AtOrAbove = false; info.Threshold = lowEnd;
+                info.AtOrAbove = false; info.Threshold = lowEnd; info.Other = highStart;
                 info.Condition = "at " + Signed(lowEnd) + " or less, and at " + Signed(highStart) + " or more";
             }
             else
             {
-                info.AtOrAbove = true; info.Threshold = minD; info.Condition = "from " + Signed(minD) + " to " + Signed(maxD);
+                info.AtOrAbove = true; info.Threshold = minD; info.Other = maxD; info.Condition = "from " + Signed(minD) + " to " + Signed(maxD);
             }
             list.Add(info);
         }
@@ -449,6 +554,9 @@ namespace CalcBJ.Engine
         /// <summary>Lists every decision that differs from basic strategy somewhere in [lo, hi].</summary>
         public static List<IndexInfo> DescribeIndices(PlayTable pt, int lo, int hi)
         {
+            // The same range as Build's: the ends in either order, inside the bins.
+            int a = Math.Max(PlayTable.BinMin, Math.Min(lo, hi)), b = Math.Min(PlayTable.BinMax, Math.Max(lo, hi));
+            lo = a; hi = b;
             var list = new List<IndexInfo>();
             int[] ups = Cards.ChartUpOrder;
             // Insurance

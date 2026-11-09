@@ -110,8 +110,12 @@ fn rules(req: &Value) -> Result<Rules, String> {
     if !(0.0..=10.0).contains(&r.blackjack_pays) {
         return Err("the blackjack payout must be between 0 and 10".into());
     }
-    if !(1..=8).contains(&r.max_split_hands) {
-        return Err("split hands must be 1 to 8".into());
+    // The simulator pays in twentieths of a unit; the app snaps payouts from files to them (sanitizeRules).
+    if ((r.blackjack_pays * 20.0).round() - r.blackjack_pays * 20.0).abs() > 1e-9 {
+        return Err("the blackjack payout must be a multiple of 0.05".into());
+    }
+    if !(1..=calcbj_engine::types::MAX_SPLIT_LIMIT).contains(&r.max_split_hands) {
+        return Err("split hands must be 1 to 4".into());
     }
     Ok(r)
 }
@@ -216,7 +220,16 @@ fn handle(req: &Value) -> Result<Value, String> {
         }
         "presets" => to_value(&CountSystem::presets()),
         "countKey" => Ok(json!(count(req)?.key())),
-        "countInfo" => Ok(app::count_info(&rules(req)?, &count(req)?)),
+        "countInfo" => {
+            let eor: Option<Vec<f64>> = arg_opt(req, "eor")?;
+            let eor: Option<[f64; 11]> = match eor {
+                Some(e) => Some(e.try_into().map_err(|_| "\"eor\" must have 11 values")?),
+                None => None,
+            };
+            Ok(app::count_info(&rules(req)?, &count(req)?, eor.as_ref()))
+        }
+        // Ten exact evaluations (about a second): the app asks for them in a worker and passes them to countInfo.
+        "effectsOfRemoval" => Ok(json!(effects_of_removal(&rules(req)?))),
         "simKey" => {
             let key = strategy::key_of(&rules(req)?, &count(req)?, &config(req)?);
             Ok(json!(format!("{key}#spots={}", spots(req)?)))
@@ -245,8 +258,12 @@ fn handle(req: &Value) -> Result<Value, String> {
                         strategy::action_code(f, cell >= 440)
                     })
                     .collect();
-                let ca = at.map_or(&pt.basic_result, |v| pt.result_at(v));
-                json!({ "codes": codes, "cellEv": ca.cell_ev })
+                // With basic strategy only there is no analysis per count: every count shows the off-the-top values.
+                let basic = at.is_none() || pt.per_bin.is_none();
+                let ca = if basic { &pt.basic_result } else { pt.result_at(at.unwrap_or(0)) };
+                // After the dealer's peek the values are given no dealer blackjack; otherwise they are from the deal.
+                let shown: Vec<f64> = (0..strategy::CELLS_PER_BIN * 5).map(|i| ca.shown_ev(&r, i / 5, i % 5)).collect();
+                json!({ "codes": codes, "cellEv": shown, "afterPeek": CaResult::after_peek(&r), "basic": basic })
             }))
         }
         "defaultRamp" => {
@@ -264,6 +281,22 @@ fn handle(req: &Value) -> Result<Value, String> {
         "indexRange" => {
             let (lo, hi) = app::index_range(&count(req)?, &rules(req)?);
             Ok(json!({ "min": lo, "max": hi }))
+        }
+        "carryRamp" => {
+            // The ramp moved from the count and rules it was set for (fromCount, from) to the current ones.
+            let (cs, to, ramp) = (count(req)?, rules(req)?, ramp(req)?);
+            let from: Rules = arg(req, "from")?;
+            let cs_from: CountSystem = arg(req, "fromCount")?;
+            let preset: i32 = arg(req, "preset")?;
+            let carried = app::ramp_for(&cs_from, &from, &cs, &to, &ramp, preset);
+            let custom = !(0..app::CUSTOM_PRESET).contains(&preset) && ramp.rows() >= 1;
+            Ok(
+                json!({ "ramp": carried, "preset": if custom || (0..app::CUSTOM_PRESET).contains(&preset) { preset } else { 3 } }),
+            )
+        }
+        "fromHiLo" => {
+            let values: Vec<f64> = arg(req, "values")?;
+            Ok(json!(app::from_hi_lo(&count(req)?, &rules(req)?, &values)))
         }
         "rampForRules" => {
             let (cs, ramp) = (count(req)?, ramp(req)?);
@@ -365,6 +398,137 @@ mod tests {
         assert_eq!((range["min"].as_i64(), range["max"].as_i64()), (Some(-10), Some(10)));
     }
 
+    /// Presets map each row by its typical count: Wong Halves (1 Halves TC = 1.05 Hi-Lo TC) bets like Hi-Lo at the same
+    /// true count instead of a row late, in every rounding mode.
+    #[test]
+    fn presets_for_other_counts() {
+        let (r, _, _) = defaults();
+        let halves = CountSystem::presets().into_iter().find(|c| c.name == "Wong Halves").unwrap();
+        for rounding in ["Floor", "Truncate", "Round"] {
+            let mut cs = serde_json::to_value(&halves).unwrap();
+            cs["rounding"] = json!(rounding);
+            let v = ok(json!({ "op": "defaultRamp", "rules": r, "count": cs, "ramp": null, "preset": 3 }));
+            let (min, units): (i64, Vec<f64>) =
+                (v["ramp"]["min"].as_i64().unwrap(), serde_json::from_value(v["ramp"]["units"].clone()).unwrap());
+            let at = |tc: i64| units[(tc - min) as usize];
+            assert_eq!(
+                [at(0), at(1), at(2), at(3), at(4), at(5), at(6)],
+                [1.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0],
+                "{rounding}"
+            );
+        }
+    }
+
+    /// A custom ramp keeps its bets at the same true counts when the count changes; a preset is applied again.
+    #[test]
+    fn ramp_carried_to_another_count() {
+        let (r, hi_lo, _) = defaults();
+        let ko = json!(CountSystem::presets().into_iter().find(|c| c.name.starts_with("KO")).unwrap());
+        let custom = json!({
+            "min": -3, "max": 8,
+            "units": [1.0, 1.0, 1.0, 1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0, 15.0],
+            "hands": [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2],
+        });
+        let carry = |from: &Value, to: &Value, ramp: &Value, preset: i32| {
+            ok(
+                json!({ "op": "carryRamp", "from": r, "fromCount": from, "rules": r, "count": to, "ramp": ramp, "preset": preset }),
+            )
+        };
+        // The same count and rules: nothing moves.
+        let same = carry(&hi_lo, &hi_lo, &custom, app::CUSTOM_PRESET);
+        assert_eq!(same["ramp"], custom);
+        assert_eq!(same["preset"], app::CUSTOM_PRESET);
+        // To KO's running count (6 decks: about -23 to +21 for Hi-Lo -3 to +8) and back.
+        let to_ko = carry(&hi_lo, &ko, &custom, app::CUSTOM_PRESET);
+        let units: Vec<f64> = serde_json::from_value(to_ko["ramp"]["units"].clone()).unwrap();
+        let hands: Vec<i32> = serde_json::from_value(to_ko["ramp"]["hands"].clone()).unwrap();
+        assert!(units.len() > 30 && units.windows(2).all(|w| w[0] <= w[1]), "{units:?}");
+        assert_eq!((units[0], *units.last().unwrap()), (1.0, 15.0));
+        assert_eq!((hands[0], *hands.last().unwrap()), (1, 2));
+        // Every bet of the custom ramp is still there.
+        for u in [1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0] {
+            assert!(units.contains(&u), "{u} missing in {units:?}");
+        }
+        assert_eq!(carry(&ko, &hi_lo, &to_ko["ramp"], app::CUSTOM_PRESET)["ramp"], custom);
+        // A preset is applied again over the new count's rows.
+        let preset = carry(&hi_lo, &ko, &custom, 3);
+        assert_eq!(preset["preset"], 3);
+        assert_eq!(
+            preset["ramp"],
+            ok(json!({ "op": "defaultRamp", "rules": r, "count": ko, "ramp": null, "preset": 3 }))["ramp"]
+        );
+        // More decks move a running count's rows: the bets follow.
+        let eight = json!(Rules { decks: 8, ..Rules::default() });
+        let moved = ok(
+            json!({ "op": "carryRamp", "from": r, "fromCount": ko, "rules": eight, "count": ko, "ramp": to_ko["ramp"], "preset": app::CUSTOM_PRESET }),
+        );
+        assert!(moved["ramp"]["min"].as_i64().unwrap() < to_ko["ramp"]["min"].as_i64().unwrap());
+        let units8: Vec<f64> = serde_json::from_value(moved["ramp"]["units"].clone()).unwrap();
+        assert_eq!((units8[0], *units8.last().unwrap()), (1.0, 15.0));
+    }
+
+    /// Published Hi-Lo index numbers stay as they are for counts that read like Hi-Lo and are converted for the others.
+    #[test]
+    fn published_indices_in_another_count() {
+        let (r, hi_lo, _) = defaults();
+        let published = [-1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let own = |name: &str| -> Vec<f64> {
+            let cs = if name.is_empty() {
+                hi_lo.clone()
+            } else {
+                json!(CountSystem::presets().into_iter().find(|c| c.name.starts_with(name)).unwrap())
+            };
+            serde_json::from_value(ok(json!({ "op": "fromHiLo", "rules": r, "count": cs, "values": published })))
+                .unwrap()
+        };
+        assert_eq!(own(""), published);
+        // A level-2 count has about twice the numbers.
+        assert_eq!(own("Zen"), [-2.0, 0.0, 2.0, 4.0, 5.0, 7.0, 9.0]);
+        // KO's running count with 6 decks: Hi-Lo +4 is at its pivot (+4, within a point at mid-shoe), 4 points per true count.
+        let ko = own("KO");
+        assert!((ko[5] - 4.0).abs() <= 1.0, "{ko:?}");
+        assert!(ko.windows(2).all(|w| w[1] - w[0] == 4.0), "{ko:?}");
+    }
+
+    /// The chart says what its values are: given no dealer blackjack where the dealer peeks, and basic strategy's when
+    /// no index plays are in use (whatever count was asked for).
+    #[test]
+    fn chart_values_are_labelled() {
+        let (r, cs, _) = defaults();
+        let basic_only = json!({ "mode": "BasicOnly", "indexMin": -10, "indexMax": 10, "overrides": [] });
+        let full = json!({ "mode": "FullIndices", "indexMin": -10, "indexMax": 10, "overrides": [] });
+        let chart = ok(json!({ "op": "chart", "rules": r, "count": cs, "config": basic_only, "at": 3 }));
+        assert_eq!((chart["basic"].as_bool(), chart["afterPeek"].as_bool()), (Some(true), Some(true)));
+        let at3 = ok(json!({ "op": "chart", "rules": r, "count": cs, "config": full, "at": 3 }));
+        assert_eq!(at3["basic"], false);
+        // 16 v T, surrender: half a unit once the dealer has shown no blackjack.
+        let cell = strategy::hard_cell(16, 10);
+        let surrender = chart["cellEv"][cell * 5 + 3].as_f64().unwrap();
+        assert!((surrender + 0.5).abs() < 1e-12, "{surrender}");
+        let enhc = json!(Rules { hole_card: HoleCardRule::Enhc, ..Rules::default() });
+        let no_peek = ok(json!({ "op": "chart", "rules": enhc, "count": cs, "config": full, "at": null }));
+        assert_eq!(no_peek["afterPeek"], false);
+    }
+
+    /// Rules the simulator and the analysis would read differently are refused (the app brings files into range first).
+    #[test]
+    fn rules_off_the_grid_are_errors() {
+        let (r, _, _) = defaults();
+        for (field, value) in [
+            ("blackjackPays", json!(4.0 / 3.0)),
+            ("maxSplitHands", json!(5)),
+            ("decks", json!(9)),
+            ("penetration", json!(1.2)),
+        ] {
+            let mut bad = r.clone();
+            bad[field] = value;
+            assert!(handle(&json!({ "op": "houseEdge", "rules": bad })).is_err(), "{field}");
+        }
+        let mut six_five = r.clone();
+        six_five["blackjackPays"] = json!(1.2);
+        assert!(ok(json!({ "op": "houseEdge", "rules": six_five })).as_f64().unwrap() < -0.015);
+    }
+
     #[test]
     fn risk_formulas() {
         let p = ok(json!({ "op": "phiInv", "p": [0.5, 0.9] }));
@@ -385,10 +549,18 @@ mod tests {
         assert!(s["indices"].as_array().unwrap().iter().any(|i| i["hand"] == "16 v T"));
         let chart = ok(json!({ "op": "chart", "rules": r, "count": cs, "config": sc, "at": null }));
         assert_eq!(chart["codes"].as_array().unwrap().len(), strategy::CELLS_PER_BIN);
-        assert_eq!(chart["codes"][strategy::hard_cell(16, 10)], "R");
+        // Surrender; hands of three or more cards, which can't, stand.
+        assert_eq!(chart["codes"][strategy::hard_cell(16, 10)], "Rs");
         let info = ok(json!({ "op": "countInfo", "rules": r, "count": cs }));
         assert_eq!(info["factor"], 1.0);
-        assert!(info["bettingCorrelation"].as_f64().unwrap() > 0.9);
+        // The betting correlation needs the effects of removal, which come from their own (slow) request.
+        assert!(info["bettingCorrelation"].is_null());
+        let eor = ok(json!({ "op": "effectsOfRemoval", "rules": r }));
+        assert_eq!(eor.as_array().unwrap().len(), 11);
+        let info = ok(json!({ "op": "countInfo", "rules": r, "count": cs, "eor": eor }));
+        let bc = info["bettingCorrelation"].as_f64().unwrap();
+        assert!((0.955..0.975).contains(&bc), "Hi-Lo betting correlation {bc}");
+        assert!(handle(&json!({ "op": "countInfo", "rules": r, "count": cs, "eor": [0, 1] })).is_err());
         assert_eq!(ok(json!({ "op": "presets" })).as_array().unwrap().len(), 13);
     }
 

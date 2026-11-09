@@ -45,15 +45,20 @@
         composition on the count, using your tags, red and black ones included); how deep in the shoe that count usually
         comes up sets the number of unseen cards. Then it runs a full combinatorial analysis of that composition: exact
         dealer probabilities with card removal for every
-        two-card hand, optimal hitting, doubling, splitting (with resplits) and surrender. The best play at each count
-        becomes the index. Index numbers follow your rounding method: with floored true counts (TC 0 means 0 to 0.99) some
-        come out a point higher than tables that assume exact counts; 16 v T, for example, stands from +1.
+        two-card hand, optimal hitting, doubling, splitting (with resplits) and surrender, corrected by what taking your own
+        drawn cards out of the shoe changes (worked out exactly off the top). The hands of a total are weighted by how
+        often each comes up at that count, and a total's stand-or-hit also counts its hands of three or more cards, which
+        the same decision plays. The best play at each count becomes the index. Index numbers follow your rounding method:
+        with floored true counts (TC 0 means 0 to 0.99) some come out a point higher than tables that assume exact counts;
+        12 v 2, for example, stands from +4.
       </p>
     </Card>
 
     <Card title="Accuracy">
       <p>
-        The basic strategy expectation off the top plays the computed strategy exactly, with card removal for every hit,
+        Basic strategy is worked out with every card you draw taken out of the shoe, so one- and two-deck charts match the
+        published ones. The basic strategy expectation off the top plays the computed strategy exactly, with card removal
+        for every hit,
         double and split hand, and agrees with shuffle-every-round simulations of 1 to 8 decks to within about 0.005%.
         House edges match published figures (6D S17 DAS 0.41%, H17 0.62%). This version uses the same engine as the Windows
         app, tested to give identical results. Precision of a simulated win rate is shown as ± one standard error; use more

@@ -1,4 +1,6 @@
 using System;
+using System.Text.RegularExpressions;
+using System.Text;
 using System.Drawing;
 using System.Globalization;
 using System.Windows.Forms;
@@ -212,9 +214,35 @@ namespace CalcBJ.App
             return c;
         }
 
+        /// <summary>
+        /// A number box that reads what was typed the way the grid cells do (TryParse: a decimal point or comma, thousands
+        /// separators) and keeps exactly the value it shows: digits typed beyond its decimal places are rounded away, so
+        /// the program never works with 2.6 spots while the box shows 3.
+        /// </summary>
+        sealed class NumBox : NumericUpDown
+        {
+            protected override void ValidateEditText()
+            {
+                if (UserEdit)
+                {
+                    string typed = Text;
+                    UserEdit = false;   // the value is set from here on; the box must not parse the text itself
+                    double v;
+                    if (TryParse(typed, out v))
+                    {
+                        decimal d;
+                        try { d = Math.Round((decimal)v, DecimalPlaces, MidpointRounding.AwayFromZero); }
+                        catch (OverflowException) { d = v > 0 ? Maximum : Minimum; }
+                        Value = Math.Max(Minimum, Math.Min(Maximum, d));
+                    }
+                }
+                UpdateEditText();
+            }
+        }
+
         public static NumericUpDown Num(decimal min, decimal max, decimal value, int decimals, decimal inc, int width)
         {
-            var n = new NumericUpDown();
+            var n = new NumBox();
             n.Minimum = min; n.Maximum = max; n.DecimalPlaces = decimals; n.Increment = inc;
             n.Value = Math.Max(min, Math.Min(max, value));
             n.Width = S(width);
@@ -257,6 +285,20 @@ namespace CalcBJ.App
         {
             if (double.IsNaN(fraction) || double.IsInfinity(fraction)) return "—";
             return (fraction * 100).ToString("F" + decimals, CultureInfo.InvariantCulture) + "%";
+        }
+
+        /// <summary>
+        /// A risk of ruin, with enough decimals to tell small ones apart, the same on every page: 23.4%, 5.18%, 0.520%,
+        /// 0.0400%, and "&lt; 0.0001%" below that.
+        /// </summary>
+        public static string Ror(double ror)
+        {
+            if (double.IsNaN(ror) || double.IsInfinity(ror)) return "—";
+            double p = ror * 100;
+            if (p <= 0) return "0%";
+            if (p < 0.0001) return "< 0.0001%";
+            string fmt = p >= 10 ? "0.0" : (p >= 1 ? "0.00" : (p >= 0.1 ? "0.000" : "0.0000"));
+            return p.ToString(fmt, CultureInfo.InvariantCulture) + "%";
         }
 
         public static string SignedPct(double fraction, int decimals)
@@ -304,14 +346,35 @@ namespace CalcBJ.App
             tips.SetToolTip(c, text);
         }
 
+        /// <summary>
+        /// Lenient number input, the same as in the web app (parseNumber): ignores $, %, + and spaces, and reads both the
+        /// app's own format (25,000 and 12,345.67) and a decimal comma (25,5 or 1.234,5). With both marks the later one is
+        /// the decimal mark; commas alone are thousands separators when they group the digits in threes (1,000 or
+        /// 1,000,000), otherwise a decimal comma. A typographic minus counts as a minus.
+        /// </summary>
         public static bool TryParse(string s, out double v)
         {
             v = 0;
             if (s == null) return false;
-            s = s.Trim().Replace("$", "").Replace("%", "").Replace("+", "").Replace("≥", "").Replace("≤", "");
-            if (s.IndexOf('.') < 0) s = s.Replace(',', '.');
-            else s = s.Replace(",", "");
-            return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+            var sb = new StringBuilder();
+            foreach (char ch in s.Trim())
+            {
+                if (ch == '$' || ch == '%' || ch == '+' || ch == '≥' || ch == '≤' || char.IsWhiteSpace(ch)) continue;
+                sb.Append(ch == '\u2212' || ch == '\u2013' ? '-' : ch);
+            }
+            s = sb.ToString();
+            if (s.Length == 0 || s == "-") return false;
+            int comma = s.LastIndexOf(','), dot = s.LastIndexOf('.');
+            if (comma >= 0 && dot >= 0) s = dot > comma ? s.Replace(",", "") : FirstCommaToPoint(s.Replace(".", ""));
+            else if (comma >= 0) s = Regex.IsMatch(s, @"^-?[1-9]\d{0,2}(,\d{3})+$") ? s.Replace(",", "") : FirstCommaToPoint(s);
+            else if (Regex.IsMatch(s, @"^-?[1-9]\d{0,2}(\.\d{3}){2,}$")) s = s.Replace(".", "");
+            return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out v) && !double.IsNaN(v) && !double.IsInfinity(v);
+        }
+
+        static string FirstCommaToPoint(string s)
+        {
+            int i = s.IndexOf(',');
+            return i < 0 ? s : s.Substring(0, i) + "." + s.Substring(i + 1);
         }
     }
 }

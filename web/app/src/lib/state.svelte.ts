@@ -137,6 +137,31 @@ function restoreEntry(e: CompareEntry): CompareEntry {
   return out;
 }
 
+/**
+ * Brings rules from a file or from storage into the ranges the program works with, as the Windows app does: 1 to 8
+ * decks, split to at most 4 hands, a blackjack payout in twentieths of a unit (what the simulator pays in) and a
+ * penetration from 0 to 100%.
+ */
+export function sanitizeRules(r: Rules): Rules {
+  const int = (v: number, min: number, max: number, or: number) =>
+    Number.isFinite(v) ? Math.max(min, Math.min(max, Math.round(v))) : or;
+  const pays = Number.isFinite(r.blackjackPays) ? Math.max(0, Math.min(10, r.blackjackPays)) * 20 : 30;
+  // Ties to even, as .NET rounds.
+  const twentieths = Math.abs(pays % 1) === 0.5 ? 2 * Math.round(pays / 2) : Math.round(pays);
+  return {
+    ...r,
+    decks: int(r.decks, 1, 8, 6),
+    maxSplitHands: int(r.maxSplitHands, 1, 4, 4),
+    blackjackPays: twentieths / 20,
+    penetration: Number.isFinite(r.penetration) ? Math.max(0, Math.min(1, r.penetration)) : 0.75,
+  };
+}
+
+/** Whether a count value means another true count when the decks or the penetration change (C#: DependsOnDecks). */
+export function dependsOnDecks(cs: CountSystem): boolean {
+  return cs.metric === "RunningCount" || !isBalanced(cs) || cs.ircBase !== 0 || cs.ircPerDeck !== 0;
+}
+
 /** Counts saved before 0.1.1 can carry Canfield Expert's old tags (the 2 counted +1): brings them up to date. */
 export function upgradeSavedCount(cs: CountSystem): CountSystem {
   const old = [0, 1, 1, 1, 1, 1, 1, 0, -1, -1];
@@ -203,9 +228,25 @@ class AppState {
 
   simStale = $derived(this.sim !== null && this.sim.key !== this.simKey);
 
+  /**
+   * True when the simulation shown was run with another count (or the same count converted differently): its count
+   * values then aren't the ones the bet ramp is set for, so the ramp can't be worked out on it.
+   */
+  simOfAnotherCount = $derived.by(() => {
+    const key = this.sim?.key;
+    if (!key) return false;
+    try {
+      // The key is rules # count # strategy # spots; the rules part has no "#".
+      const at = key.indexOf("#");
+      return at < 0 || !key.slice(at + 1).startsWith(engine.countKey(this.count) + "#");
+    } catch {
+      return true;
+    }
+  });
+
   evaluation = $derived.by((): Evaluation | null => {
     const d = this.sim;
-    if (!d) return null;
+    if (!d || this.simOfAnotherCount) return null;
     try {
       return engine.evaluate(d, this.ramp, this.unit, this.rph, this.bankroll);
     } catch {
@@ -222,19 +263,41 @@ class AppState {
 
   // ---------------- settings that move other settings ----------------
 
-  /** After the count or its scale changed: ramp rows and index range follow the count, as in the Windows app. */
-  resetRanges(): void {
-    const r = engine.defaultRamp(this.rules, this.count, this.ramp, this.rampPreset);
+  /**
+   * Moves the ramp to the current count and rules from the ones it was set for, as the Windows app does: a preset is
+   * applied again over the new range; a custom ramp keeps its bets at the same true counts.
+   */
+  carryRamp(oldCount: CountSystem, oldRules: Rules): void {
+    const r = engine.carryRamp(oldRules, oldCount, this.rules, this.count, this.ramp, this.rampPreset);
     this.ramp = r.ramp;
     this.rampPreset = r.preset;
+  }
+
+  resetIndexRange(): void {
     const range = engine.indexRange(this.rules, this.count);
     this.strategy.indexMin = range.min;
     this.strategy.indexMax = range.max;
   }
 
-  /** The number of decks moves running counts and unbalanced true counts. */
-  decksChanged(): void {
-    if (this.count.metric === "RunningCount" || !isBalanced(this.count)) this.resetRanges();
+  /** After another count was chosen, or its values came to mean other true counts (metric, starting count). */
+  countChanged(old: CountSystem): void {
+    this.carryRamp(old, this.rules);
+    this.resetIndexRange();
+  }
+
+  /**
+   * After the decks or the penetration changed: for a running count, an unbalanced count or one with a starting count,
+   * count values mean other true counts now. With other decks the ramp moves with them and the index range is set
+   * anew; with another penetration only a preset follows, and a custom ramp stays as it was set.
+   */
+  rulesChanged(old: Rules): void {
+    if (!dependsOnDecks(this.count)) return;
+    if (old.decks !== this.rules.decks) {
+      this.carryRamp(this.count, old);
+      this.resetIndexRange();
+    } else if (old.penetration !== this.rules.penetration && this.rampPreset < CUSTOM_PRESET) {
+      this.carryRamp(this.count, old);
+    }
   }
 
   applyRampPreset(preset: number): void {
@@ -432,6 +495,13 @@ class AppState {
       rounds: this.sim?.rounds ?? 0,
       stale: this.simStale,
     };
+    if (this.simStale && this.sim?.rulesText) {
+      // The results are of the last simulation, not of the settings as they are now: say what was simulated.
+      e.rules = this.sim.rulesText;
+      e.count = this.sim.countText;
+      e.strategy = this.sim.strategyText;
+      if (Number.isFinite(this.sim.basicEv)) e.houseEdge = -this.sim.basicEv;
+    }
     if (a && ev && this.sim) {
       Object.assign(e, {
         winPerHour: a.winPerHour,
@@ -481,7 +551,7 @@ class AppState {
 
   /** Opens a scenario like the Windows app does; throws (and changes nothing) when the engine rejects its settings. */
   loadScenario(s: Scenario, fileName: string): void {
-    const rules = { ...defaultRules(), ...s.rules };
+    const rules = sanitizeRules({ ...defaultRules(), ...s.rules });
     const count = upgradeSavedCount(s.count);
     const strategy = { ...defaultStrategy(), ...s.strategy };
     const spots = Math.max(1, Math.min(7, Math.round(s.spots)));
@@ -497,6 +567,8 @@ class AppState {
     this.bankroll = s.bankroll > 0 ? s.bankroll : 25000;
     this.ramp = validRamp(s.ramp) ? s.ramp : engine.defaultRamp(rules, count, null, s.rampPreset).ramp;
     this.rampPreset = Math.max(0, Math.min(CUSTOM_PRESET, Math.round(s.rampPreset)));
+    // The count was corrected on the way in: its ramp and index range were set for the old tags.
+    if (count !== s.count) this.countChanged(s.count);
     if (ROUND_OPTIONS.includes(s.simRounds)) this.simRounds = s.simRounds;
     // The thread count is a property of this device, not of the scenario (the file may come from a bigger PC).
     if (s.tripHours > 0) this.tripHours = s.tripHours;
@@ -544,9 +616,14 @@ class AppState {
     const s = read<Saved>(SETTINGS_KEY);
     if (s?.version === 1) {
       try {
-        const rules = { ...defaultRules(), ...s.rules };
-        const count = upgradeSavedCount({ ...structuredClone(presets[0]), ...s.count });
+        const rules = sanitizeRules({ ...defaultRules(), ...s.rules });
+        const saved = { ...structuredClone(presets[0]), ...s.count };
+        const count = upgradeSavedCount(saved);
         const strategy = { ...defaultStrategy(), ...s.strategy };
+        // An index range left the wrong way round or beyond the count bins (an extreme starting count could do that).
+        const [lo, hi] = [Math.min(strategy.indexMin, strategy.indexMax), Math.max(strategy.indexMin, strategy.indexMax)];
+        strategy.indexMin = Math.max(-100, Math.min(100, lo));
+        strategy.indexMax = Math.max(-100, Math.min(100, hi));
         const spots = number(s.spots, 1, 7, 3);
         engine.simKey(rules, count, strategy, spots); // throws on settings the engine rejects
         this.rules = rules;
@@ -556,6 +633,7 @@ class AppState {
         if (validRamp(s.ramp)) this.ramp = s.ramp;
         else this.ramp = engine.defaultRamp(rules, count, null, 3).ramp;
         this.rampPreset = number(s.rampPreset, 0, CUSTOM_PRESET, 3);
+        if (count !== saved) this.countChanged(saved);
       } catch {
         // Keep the defaults.
       }
