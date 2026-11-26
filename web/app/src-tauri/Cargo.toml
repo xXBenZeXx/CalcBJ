@@ -1,7 +1,7 @@
 [package]
 # The package name also names the desktop program (calcbj-desktop.exe), so it stays as it is.
 name = "calcbj-desktop"
-version = "0.1.4"
+version = "0.1.5"
 description = "CalcBJ as an app of its own: the web interface and engine in a window on Windows and Mac, and as the Android and iPhone app"
 edition = "2021"
 publish = false
