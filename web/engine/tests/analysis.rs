@@ -1,11 +1,11 @@
-//! Bet-ramp evaluation, risk formulas and the optimiser against the C# engine (fixtures/analysis.json).
+//! Bet-ramp evaluation, risk formulas and the optimiser against the fixtures (fixtures/analysis.json).
 
 mod common;
 
 use calcbj_engine::analysis;
 use common::*;
 
-/// exp, ln and powf may differ from .NET in the last bit; everything else is identical arithmetic.
+/// exp, ln and powf may differ in the last bit on another platform; everything else is plain arithmetic.
 const TOL: f64 = 1e-12;
 
 fn rel(want: f64) -> f64 {

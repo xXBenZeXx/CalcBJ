@@ -138,8 +138,9 @@ impl ExactAdjust {
 /// The model's unseen cards out of the population left after a deal: q_r = n p_r (1 + (t_r - m) x) with
 /// x = (s/n - m) / V, where p, m and V are the population's rank shares, mean tag and tag variance per card. The
 /// variance includes the spread between a rank's red and black cards: the tag sum also depends on their colours, which
-/// the rank counts don't show. Returns the cards' sum.
-fn regress(popl: &[f64; 11], model: &CountModel, outc: &mut [f64; 11]) -> f64 {
+/// the rank counts don't show. Returns the cards' sum. Public for `tests/count_model.rs`, which checks it against random
+/// draws of unseen cards.
+pub fn regress(popl: &[f64; 11], model: &CountModel, outc: &mut [f64; 11]) -> f64 {
     let (mut m, mut st) = (0.0, 0.0);
     for r in 1..=10 {
         m += popl[r];

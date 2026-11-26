@@ -1,4 +1,5 @@
-//! Numeric helpers that behave exactly like .NET Framework, so results and texts match the C# engine.
+//! Numeric helpers that behave exactly like .NET Framework, so results, keys and texts stay as CalcBJ's first (C#)
+//! version made them.
 
 /// `Math.Max(double, double)` of .NET Framework: when the values compare equal it returns `b`, and a NaN in `a` wins.
 #[inline]

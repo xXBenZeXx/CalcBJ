@@ -1,5 +1,5 @@
-//! The C# app's helpers around the engine (AppState.cs, CountPage.cs): count scale, default ramp and index ranges,
-//! ramp presets, and the betting and insurance correlations shown on the count page.
+//! Helpers around the engine that CalcBJ's first (C#) version had in AppState.cs and CountPage.cs: count scale,
+//! default ramp and index ranges, ramp presets, and the betting and insurance correlations shown on the count page.
 
 use calcbj_engine::strategy::{BIN_MAX, BIN_MIN, mid_depth_decks, representative, tc_equivalent};
 use calcbj_engine::*;

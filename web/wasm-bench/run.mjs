@@ -1,5 +1,6 @@
 // Runs the CalcBJ engine as WebAssembly in Node: prints single-thread speed and the checksum of 4M rounds per
-// benchmark game, which must equal the "checksum" column of `tools\bin\EngineTest.exe bench`.
+// benchmark game, which must equal the "checksum" column of the native benchmark (in web\engine:
+// cargo run --release --example bench).
 // Build first: cargo build --release --target wasm32-unknown-unknown
 import { readFile } from "node:fs/promises";
 

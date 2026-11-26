@@ -1,6 +1,6 @@
-//! Simulator against the C# engine (fixtures/sim.json): from the same seed a single thread must deal exactly the
-//! same rounds, so every tally has to match exactly. Also checks the multi-threaded driver against the
-//! combinatorial analysis.
+//! Simulator against the fixtures (fixtures/sim.json): from the same seed a single thread must deal exactly the same
+//! rounds, so every tally has to match exactly. Also checks the multi-threaded driver against the combinatorial
+//! analysis.
 
 mod common;
 

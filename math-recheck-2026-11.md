@@ -1,5 +1,8 @@
 # CalcBJ math recheck — 6/7 November 2026
 
+> The C# engine, the Windows app and the C# tools (`src/`, `tools/`) were removed on 26 November 2026; the Rust engine
+> is the only one. File references below to C# code point to the git history up to commit `d24b7e2`.
+
 Version checked: v0.1.3 (`main` = `cd7ff40`), all four implementations: the C# engine and Windows app (`src/`), the Rust
 engine (`web/engine`), the WebAssembly layer (`web/engine-wasm`) and the web/desktop/Android app (`web/app`).
 Nothing in the repository was changed; every test program lives in a scratch folder.

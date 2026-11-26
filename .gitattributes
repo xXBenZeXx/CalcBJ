@@ -1,2 +1,3 @@
-# Scenario files are compared byte for byte with what the Windows app writes (CRLF line ends).
+# Scenario files keep their CRLF line ends, as the apps write them (and as CalcBJ's first version, the Windows app,
+# wrote web/app/tests/fixtures/windows-sample.bjev).
 *.bjev -text

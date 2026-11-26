@@ -1,5 +1,5 @@
-//! Shoe simulator (C#: Simulator.cs). A worker deals the same cards from the same seed as the C# version, so
-//! single-threaded runs give identical tallies.
+//! Shoe simulator (C#: Simulator.cs). A worker's cards depend only on its seed (they are the ones the C# version
+//! dealt), so a single-threaded run gives the same tallies every time.
 
 use crate::ca::flag;
 use crate::num::{dmax, round_even_i32};

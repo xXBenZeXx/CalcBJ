@@ -1,4 +1,4 @@
-//! Rules texts, cut card and combinatorial analysis against the C# engine (fixtures/ca.json).
+//! Rules texts, cut card and combinatorial analysis against the fixtures (fixtures/ca.json).
 
 mod common;
 
@@ -6,8 +6,8 @@ use calcbj_engine::*;
 use common::*;
 use serde_json::Value;
 
-/// The analysis is plain arithmetic in the same order as the C# code, so results should be identical; this only
-/// allows for a last-bit difference.
+/// The analysis is plain arithmetic, so results should be identical to the fixtures; this only allows for a last-bit
+/// difference.
 const TOL: f64 = 1e-14;
 
 fn compare_ca(c: &mut Check, label: &str, res: &CaResult, want: &Value) {

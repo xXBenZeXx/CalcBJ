@@ -1,9 +1,11 @@
-//! CalcBJ engine: the Rust port of the C# engine in `src/Engine`, for the web version of CalcBJ.
+//! CalcBJ engine: combinatorial analysis, index generation, simulation and bet-ramp analysis. The apps run it as
+//! WebAssembly (`web/engine-wasm`).
 //!
-//! Ranks are 1..=10 everywhere (1 = ace, 10 = any ten-value card). The modules follow the C# files:
-//! [`types`] (Types.cs), [`ca`] (Combinatorial.cs and DealerDag.cs), [`strategy`] (Strategy.cs),
-//! [`sim`] (Simulator.cs) and [`analysis`] (Analysis.cs). Every result matches the C# engine exactly; the tests compare
-//! against fixtures written by `tools/Oracle.cs` (see `make-fixtures.ps1`).
+//! Ranks are 1..=10 everywhere (1 = ace, 10 = any ten-value card). The engine started as a line-by-line translation of
+//! the C# engine of CalcBJ's first version (retired in November 2026; in the git history up to commit `d24b7e2`), and
+//! its modules follow those files: [`types`] (Types.cs), [`ca`] (Combinatorial.cs and DealerDag.cs), [`strategy`]
+//! (Strategy.cs), [`sim`] (Simulator.cs) and [`analysis`] (Analysis.cs); "C#:" in a comment names the original. The
+//! tests compare every result with the fixtures in `tests/fixtures`, which `examples/fixtures.rs` writes.
 
 pub mod analysis;
 pub mod ca;

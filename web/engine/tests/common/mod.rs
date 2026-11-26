@@ -1,4 +1,4 @@
-//! Loading the C# fixtures (written by tools/Oracle.cs) and comparing results.
+//! Loading the fixtures (written by examples/fixtures.rs) and comparing results.
 #![allow(dead_code)]
 
 use calcbj_engine::*;
@@ -8,7 +8,7 @@ use std::path::PathBuf;
 pub fn fixture(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name);
     let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{}: {e} (write the fixtures with make-fixtures.ps1)", path.display()));
+        .unwrap_or_else(|e| panic!("{}: {e} (write the fixtures with cargo run --example fixtures)", path.display()));
     serde_json::from_str(&text).expect("fixture JSON")
 }
 

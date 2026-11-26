@@ -1,4 +1,4 @@
-//! Simulation speed, comparable with `tools\bin\EngineTest.exe bench`: same games, seeds and single-thread checksum.
+//! Simulation speed: the same games, seeds and single-thread checksum as the WebAssembly benchmark in `../wasm-bench`.
 //! Run with `cargo run --release --example bench [threads]`.
 
 use calcbj_engine::*;

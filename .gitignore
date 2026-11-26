@@ -1,4 +1,2 @@
-# Built by build.ps1 and csc (the Windows EXE and the tools); the web parts have their own .gitignore files.
-/dist/
-/tools/bin/
+# The web parts have their own .gitignore files.
 .claude/settings.local.json

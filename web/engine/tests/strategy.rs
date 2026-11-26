@@ -1,4 +1,4 @@
-//! Strategy tables (basic, I18, Fab 4, full indices, overrides) and index descriptions against the C# engine
+//! Strategy tables (basic, I18, Fab 4, full indices, overrides) and index descriptions against the fixtures
 //! (fixtures/strategy.json).
 
 mod common;

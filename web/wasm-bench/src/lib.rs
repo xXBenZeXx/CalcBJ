@@ -1,6 +1,6 @@
-//! The engine compiled to WebAssembly, for checking that it deals exactly the same rounds as natively and in C#
-//! (same checksums as `EngineTest.exe bench`) and for measuring its speed. Only numbers cross the boundary, so no
-//! JavaScript glue is needed; run.mjs loads it in Node.
+//! The engine compiled to WebAssembly, for checking that it deals exactly the same rounds as natively (same checksums
+//! as `cargo run --release --example bench` in `../engine`) and for measuring its speed. Only numbers cross the
+//! boundary, so no JavaScript glue is needed; run.mjs loads it in Node.
 
 use calcbj_engine::*;
 use std::cell::RefCell;
@@ -13,7 +13,7 @@ fn game(decks: i32, h17: bool, das: bool, surrender: SurrenderRule, max_split: i
     Rules { decks, h17, das, surrender, max_split_hands: max_split, ..Rules::default() }
 }
 
-/// The benchmark games of `EngineTest.exe bench`.
+/// The benchmark games of `../engine/examples/bench.rs`.
 fn setup(index: u32) -> (Rules, CountSystem, StrategyConfig, i32) {
     let h17 = game(6, true, true, SurrenderRule::Late, 4);
     let hi_lo = CountSystem::default();

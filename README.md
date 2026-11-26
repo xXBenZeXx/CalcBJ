@@ -1,12 +1,10 @@
 # CalcBJ — Blackjack Advantage Calculator
 
-A Windows desktop tool for card counters: enter the game, pick a count and bet ramp, and get win rate,
-standard deviation, SCORE, N0, risk of ruin, bankroll requirements and optimal bets.
+A tool for card counters: enter the game, pick a count and bet ramp, and get win rate, standard deviation, SCORE, N0,
+risk of ruin, bankroll requirements and optimal bets. Everything is computed on the device; no internet needed.
 
-**Run:** `dist\CalcBJ.exe` (single file, ~230 KB). Needs only the .NET Framework 4.8 that ships with Windows 10/11.
-
-**Mac and Windows desktop app:** the installers (`.dmg` for Mac, `-setup.exe` for Windows) are on the GitHub
-repository's Releases page; see [Web and desktop version](#web-and-desktop-version).
+**Desktop app for Windows and Mac:** the installers (`-setup.exe` for Windows, `.dmg` for Mac) are on the GitHub
+repository's Releases page; see [Apps](#apps).
 
 **Android app:** `CalcBJ_<version>_android-arm64.apk` on the same Releases page; see [Phone apps](#phone-apps).
 
@@ -16,18 +14,20 @@ repository's Releases page; see [Web and desktop version](#web-and-desktop-versi
 |---|---|
 | Game rules | Decks, penetration, H17/S17, peek/ENHC/OBO, BJ payout, doubling, DAS, splits, RSA/HSA, surrender, spots, rounds per hour. The basic-strategy house edge and the effect of every single rule change are computed instantly by combinatorial analysis. |
 | Count & strategy | 13 built-in counts (Hi-Lo, KO, Hi-Opt I/II, Omega II, Zen, Wong Halves, Uston APC/SS, RPC, Canfield, Silver Fox, Red Seven) or your own tags, including separate red-card tags. True-count method (deck estimation, floor/truncate/round) or running-count play. Index plays: basic, Illustrious 18, I18 + Fab 4, or a full index set — **generated for your exact count and rules**, plus your own overrides. Colour strategy chart viewable at any count. |
-| Simulation | Multi-threaded shoe simulator (≈160M heads-up / 65M three-spot rounds/s on a Ryzen 7 9800X3D). Stores per-count EV, variance and two-seat covariance. Runs only when you press Run (F5) unless you tick "Re-run automatically"; results are kept per configuration, so returning to settings you already ran is instant and Run adds rounds to them. |
+| Simulation | Shoe simulator on every CPU thread (≈80M three-spot rounds/s on a Ryzen 7 9800X3D). Stores per-count EV, variance and two-seat covariance. Runs only when you press Run (F5); results are kept per configuration, so returning to settings you already ran is instant and Run adds rounds to them. |
 | Bet ramp & results | Edit units and hands per count (0 = wong out). Win rate, SD, edge, SCORE, DI, N0, ROR, bankroll for 5%/13.5%/1% ROR, Kelly unit, certainty equivalent — all instant. Presets, linear ramps and an optimiser (max SCORE within a spread, or Kelly for your bankroll, optional wonging and multiple hands). |
 | Bankroll & risk | Lifetime and trip risk of ruin, chance of a losing trip, percentile outcomes, ROR curve, result bands over time. |
 | Charts | Count frequencies vs. advantage, bets vs. advantage, contribution by count, result distribution. |
 | Sensitivity sweep | Re-simulate across penetration, decks, spots or index set; or the optimal SCORE for each max bet. For running and unbalanced counts (KO, Red Seven, Uston SS), whose values mean something else with another number of decks, each deck count gets its own index range and ramp (the preset again, or your ramp mapped by Hi-Lo equivalent). |
 | Compare games | Snapshot scenarios and compare them side by side (best value highlighted). |
 
-Scenarios save to `.bjev` files (including simulation results); reports export to HTML. Shortcuts: F5 run, Esc stop, Ctrl+S, Ctrl+O.
+Scenarios save to `.bjev` files (including simulation results and Compare entries). Shortcuts: F5 run, Esc stop, Ctrl+S, Ctrl+O.
 
 ## How it works
 
-* **Combinatorial engine** (`src/Engine/Combinatorial.cs`, `DealerDag.cs`): exact dealer probabilities with card
+The engine is Rust (`web/engine`), compiled to WebAssembly for the apps.
+
+* **Combinatorial engine** (`web/engine/src/ca.rs`, `dealer.rs`): exact dealer probabilities with card
   removal for every player two-card hand and upcard (the dealer's draws are enumerated as multisets, so this is fast:
   ~1–3 ms per full analysis), optimal hit/stand/double/split (with resplits)/surrender, total-dependent decisions.
   Basic strategy itself takes every card the player draws out of the shoe too (hits with the best play after them,
@@ -38,7 +38,7 @@ Scenarios save to `.bjev` files (including simulation results); reports export t
   The house edge off the top then plays that strategy exactly, as the simulator does: hits, doubles and split hands
   with full card removal (a split hand with its own cards and the pair cards out of the shoe; leaving the other split
   hands' cards in makes no measurable difference).
-* **Index generation** (`src/Engine/Strategy.cs`): a play's index is the count at which the player decides, which
+* **Index generation** (`web/engine/src/strategy.rs`): a play's index is the count at which the player decides, which
   includes the player's cards and the dealer's upcard. So for each count value and each hand, those cards are taken
   out of the shoe and the rest is estimated by linear regression of the rank counts on the tag sum (red and black
   cards that count differently included), to the composition whose count (with the cards on the table) is that value. The number of unseen cards and their average count in each count bin come
@@ -53,56 +53,55 @@ Scenarios save to `.bjev` files (including simulation results); reports export t
   where version 0.1.3 earned 0.252 and 0.103 (the best possible: 0.287 and 0.112). For Hi-Lo, 6 decks S17, the I18 + Fab 4 indices
   are within one point of the published numbers, which are for unfloored true counts. The simulator floors (TC 0 means
   0 to 0.99), so 12 v 2, for example, stands from +4.
-* **Simulator** (`src/Engine/Simulator.cs`): real shoes, all spots, peek/no-peek, insurance, surrender, splits; every
+* **Simulator** (`web/engine/src/sim.rs`): real shoes, all spots, peek/no-peek, insurance, surrender, splits; every
   decision uses the count at that moment. Results are tallied exactly per count bin, so bet ramps never need re-simulation.
-* **Analysis** (`src/Engine/Analysis.cs`): ramp evaluation, multi-hand covariance, ROR (exponential and trip/reflection
-  formulas), Kelly/SCORE optimiser.
+  The hot loop deals lazily (each card is a single Fisher–Yates step, so only dealt cards cost a random number), keeps
+  rank and tag packed in one value per card and skips the count lookup for decisions without index plays; what remains
+  is mostly unpredictable game branching (hit/stand, busts, dealer draws).
+* **Analysis** (`web/engine/src/analysis.rs`): ramp evaluation, multi-hand covariance, ROR (exponential and
+  trip/reflection formulas), Kelly/SCORE optimiser.
 
-Validation (`tools/EngineTest.cs`, which exits with code 1 when a check fails): the house edge for 8D, 6D S17 and
-6D H17 (DAS, no surrender) is 0.432%, 0.406% and 0.618%, within 0.03% of published figures (`ca`). Basic strategy is
-checked to be the best there is: changing any one decision of any chart cell gains at most 0.0001% of exact expectation
-(`best`, 12 games in about 10 seconds; over 600 rule sets the largest gain was 0.00007%). For 1 to 8
-decks and the other rule variants, single and double deck with resplits and doubling after splits included, 2 billion
-shuffle-every-round rounds per game agree with the off-the-top analysis within 3.5 SE, about 0.009% (`offtop`, about
-3 minutes; in the last run all 11 games were within 0.005%). Random draws of unseen cards agree with the composition
-the index generation uses at a count, for counts with separate red tags too (`regress`).
+Validation (the engine's tests, `cargo test` in `web/engine`): the house edge for 8D, 6D S17 and 6D H17 (DAS, no
+surrender) is 0.432%, 0.406% and 0.618%, within 0.03% of published figures (`tests/ca.rs`). Basic strategy is checked
+to be the best there is: changing any one decision of any chart cell gains at most 0.0001% of exact expectation
+(`tests/basic.rs`, 12 games in about 16 seconds; over 600 rule sets the largest gain was 0.00007%). For 1 to 8 decks
+and the other rule variants, single and double deck with resplits and doubling after splits included, 2 billion
+shuffle-every-round rounds per game agree with the off-the-top analysis within 3.5 SE, about 0.009% (`tests/offtop.rs`,
+about 2 minutes on 16 threads, so it runs only when asked for; in the last run all 11 games were within 0.006% and
+2.3 SE). Random draws of unseen cards agree with the composition the index generation uses at a count, for counts with
+separate red tags too (`tests/count_model.rs`). Every other result (analyses, strategy tables, index lists, seeded
+simulations, ramp evaluations, the optimiser) is compared with reference results in `web/engine/tests/fixtures`, so
+any change to a number shows up. See `web/engine/README.md`.
 
-## Build
+## Building and testing
+
+The installers and the Android app are built by GitHub Actions (see [Apps](#apps)). On a PC with Rust (with the
+`wasm32-unknown-unknown` target) and Node.js:
 
 ```
-powershell -ExecutionPolicy Bypass -File build.ps1
+cd web\engine
+cargo test                                            # the engine's checks, about 40 seconds
+cargo test --test offtop -- --ignored --nocapture     # the long simulations, about 2 minutes
+cd ..\app
+npm install
+npm run dev                                           # the app in the browser at http://localhost:5173
 ```
 
-Uses `csc.exe` from `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319` (C# 5, no SDK needed; the simulator needs `/unsafe`).
-Output: `dist\CalcBJ.exe`. If a copy is running, the build renames it to `CalcBJ.old.exe` and writes the new EXE beside it.
+CalcBJ started out as a Windows program in C# (.NET Framework) with an engine of its own, which the Rust engine was
+translated from line by line and checked against until both gave the same results. That program was retired in
+November 2026; its code is in the git history up to commit `d24b7e2`.
 
-## Performance notes
+## Apps
 
-* The simulator's hot loop deals lazily (each card is a single Fisher–Yates step, so only dealt cards cost a random
-  number), keeps rank and tag packed in one value per card, skips the count lookup for decisions without index plays,
-  and uses pinned pointers. What remains is mostly unpredictable game branching (hit/stand, busts, dealer draws).
-* The same engine on the .NET 8 runtime runs about 8–12% faster (`dotnet tools\bin\EngineTest.exe bench` with a
-  runtimeconfig.json); building natively for .NET 8 needs the .NET 8 SDK.
-* Pages use small custom layout containers (`ArrangePanel`, `VStack`, `FieldGrid`, `TileGrid`) that measure every
-  control once; nested auto-size TableLayoutPanels made opening the window take ~6 s.
+The desktop app for Windows and Mac, the Android app and the web app are one program: the engine in Rust compiled to
+WebAssembly, and the interface in TypeScript and Svelte. The desktop and phone apps wrap it with Tauri, and GitHub
+Actions builds the installers and the APK. In a browser it is a web app that can be installed and then works offline.
 
-Tests: `tools\EngineTest.cs` (engine checks: `ca`, `best`, `offtop` and `regress` fail with exit code 1, `idx`, `sim`, `misc` print) and `tools\UiTest.cs`
-(drives the real UI in-process; compile with all `src` files and `/main:UiTest`).
-
-## Web and desktop version
-
-For Mac (and Windows), CalcBJ is also a desktop app that needs no internet, for Android an app of its own (see
-[Phone apps](#phone-apps)), and for any phone a web app that can be installed from the browser and then works offline.
-All of them use the engine in Rust compiled to WebAssembly and the interface in TypeScript and Svelte; the desktop and
-phone apps wrap them with Tauri, and GitHub Actions builds the installers and the APK.
-
-* `web\engine`: the engine port, bit-for-bit the same results as the C# engine (checked against fixtures written by
-  `tools\Oracle.cs`). See `web\engine\README.md`.
+* `web\engine`: the engine. See `web\engine\README.md`.
 * `web\engine-wasm`: its WebAssembly interface.
-* `web\app`: the interface, with all nine pages. Simulations run on every CPU thread in Web Workers. It opens and
-  saves the same `.bjev` files as this app (`tools\BjevTool.cs` checks them); the HTML report is not ported. Run it
-  with `npm install` and `npm run dev` in `web\app`; see `web\app\README.md`.
-* `web\app\src-tauri`: the desktop app (Mac `.dmg`, Windows installer), built by `.github\workflows\desktop.yml`, and
+* `web\app`: the interface, with all nine pages. Simulations run on every CPU thread in Web Workers. Run it with
+  `npm install` and `npm run dev` in `web\app`; see `web\app\README.md`.
+* `web\app\src-tauri`: the desktop app (Windows installer, Mac `.dmg`), built by `.github\workflows\desktop.yml`, and
   the phone apps (the Android APK; the iPhone app is prepared), built by `.github\workflows\phone.yml`.
 
 ## Phone apps

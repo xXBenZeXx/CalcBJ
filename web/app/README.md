@@ -31,26 +31,25 @@ builds have no service worker, since their files are inside them.
 
 ## Pages
 
-All nine pages of the Windows app, with its features and texts: Game rules, Count & strategy, Simulation, Bet ramp &
-results, Bankroll & risk, Charts, Sensitivity sweep, Compare games and Guide. The layout switches to bottom tabs on
-phones (the last five pages are under More) and follows the system's light or dark mode. Every chart shows its values
-on hover, touch or the arrow keys, and has a Table view.
+Nine pages: Game rules, Count & strategy, Simulation, Bet ramp & results, Bankroll & risk, Charts, Sensitivity sweep,
+Compare games and Guide. The layout switches to bottom tabs on phones (the last five pages are under More) and follows
+the system's light or dark mode. Every chart shows its values on hover, touch or the arrow keys, and has a Table view.
 
-Not ported: the HTML report.
+CalcBJ's first version was a Windows program in C#, retired in November 2026 (its code is in the git history up to
+commit `d24b7e2`). These pages have its features and texts, except its HTML report; "the Windows app" in comments
+means that program.
 
 ## Scenario files
 
-Open scenario (Ctrl+O) and Save scenario (Ctrl+S) read and write the Windows app's `.bjev` files, so a scenario moves
-between the two apps either way: the settings, the simulation results (a simulation of the same settings counts as
-already run) and the Compare entries. The number of CPU threads is a property of the device and is not taken from
+Open scenario (Ctrl+O) and Save scenario (Ctrl+S) read and write `.bjev` files: the settings, the simulation results (a
+simulation of the same settings counts as already run) and the Compare entries. The format is the one the Windows app
+wrote (its XmlSerializer XML, with CRLF line ends), so its files still open. The number of CPU threads is a property of the device and is not taken from
 files. In the browser, saving downloads the file. The apps use their own Rust commands (`save_scenario` and
 `open_scenario`, called from `src/lib/desktop.ts`): the system's Save and Open dialogs on the desktop; on Android the
 system's "Save to" screen (any folder and name) and its file picker; on the iPhone the app's Documents folder, which
 the Files app shows as On My iPhone › CalcBJ, and the Files picker for opening.
 
-`tests/fixtures/windows-sample.bjev` was saved by the Windows app. `tools\BjevTool.cs` in the repository writes such a
-sample (`BjevTool write <file>`) and prints what the Windows app reads from a file (`BjevTool read <file>`), which is
-how files saved here are checked; build it with all `src\**\*.cs` files and `/main:BjevTool`. On the dev server,
+`tests/fixtures/windows-sample.bjev` was saved by the Windows app; it has to keep opening. On the dev server,
 `window.calcbj` has `scenarioText()` and `openScenarioText(text, name)` for tests without the file picker.
 
 ## Installing and offline use
@@ -64,8 +63,8 @@ and Edge on Windows, Mac and Android), or in Safari on iPhone and iPad with Shar
 Both need https, except on localhost. A new build gets a new cache: the next visit with a network loads it, and the
 previous version's files stay cached until the update after that, for windows still open on the old version.
 
-The icons in `public/icons` come from the Windows icon: `tools\bin\MakeIcon.exe --web web\app\public\icons` (the
-maskable icon and the Apple touch icon fill the whole square).
+The icons in `public/icons` are the Windows app's icon, drawn by its `tools\MakeIcon.cs` (the maskable icon and the
+Apple touch icon fill the whole square).
 
 ## How it fits together
 
@@ -86,9 +85,8 @@ maskable icon and the Apple touch icon fill the whole square).
 | `src/pages/` | the pages |
 | `vite.config.ts` | the build, and the service worker with the list of files to cache |
 
-Like the Windows app, simulations only run when you press Run (F5); Esc stops. On a Ryzen 7 9800X3D (16 threads),
-200 million rounds of 6 decks H17, Hi-Lo with I18 + Fab 4 and 3 spots take 2.5 s (about 80M rounds/s, the
-Windows EXE does 65M/s).
+Simulations only run when you press Run (F5); Esc stops. On a Ryzen 7 9800X3D (16 threads), 200 million rounds of
+6 decks H17, Hi-Lo with I18 + Fab 4 and 3 spots take 2.5 s (about 80M rounds/s).
 
 ## Desktop app
 
@@ -114,8 +112,9 @@ For a new release, raise `version` in `src-tauri/tauri.conf.json` (otherwise the
 replaced). Building locally (`npm run tauri build`) needs the Microsoft C++ Build Tools on Windows or Xcode's
 command line tools on a Mac; this PC has neither, which is why GitHub builds them.
 
-The icons in `src-tauri/icons` come from `tools\bin\MakeIcon.exe --mac <file.png>` (the tile on Apple's icon grid)
-and `npm run tauri icon <file.png>`, except `icon.ico`, which is the Windows app's `assets\app.ico`.
+The icons in `src-tauri/icons` come from `npm run tauri icon <file.png>` with a 1024 px tile on Apple's icon grid that
+the Windows app's `tools\MakeIcon.cs` drew, except `icon.ico`, which is the Windows app's own icon. New icons: make a
+1024 px PNG and run `npm run tauri icon <file.png>`, which writes every size, `icon.ico` and `icon.icns` included.
 
 ## Phone apps
 

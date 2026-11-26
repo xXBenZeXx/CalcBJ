@@ -1,5 +1,4 @@
-//! Count systems, true-count conversion and the simulator's count lookup against the C# engine
-//! (fixtures/counts.json).
+//! Count systems, true-count conversion and the simulator's count lookup against the fixtures (fixtures/counts.json).
 
 mod common;
 
@@ -68,9 +67,10 @@ fn count_systems() {
     c.finish();
 }
 
-/// The fixture's systems start with the C# presets, in order, so the two lists can't drift apart.
+/// The fixture's systems start with the presets, in order (as CalcBJ's first version had them), so a changed preset
+/// shows up.
 #[test]
-fn presets_match_the_windows_app() {
+fn presets_match_the_fixture() {
     let fx = fixture("counts.json");
     let mut c = Check::new("presets");
     for (p, s) in CountSystem::presets().iter().zip(list(&fx["systems"])) {

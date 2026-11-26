@@ -31,8 +31,8 @@
         </li>
         <li>
           <b>Bankroll &amp; risk, Charts, Sensitivity sweep, Compare</b> — risk of ruin, trip outcomes, how results change with
-          one parameter, and side-by-side comparisons. Save scenarios{keyHint("Ctrl+S")}: the files open in the Windows app
-          too.
+          one parameter, and side-by-side comparisons. Save scenarios{keyHint("Ctrl+S")}: the files open in CalcBJ on
+          any computer or phone.
         </li>
       </ol>
     </Card>
@@ -60,9 +60,8 @@
         published ones. The basic strategy expectation off the top plays the computed strategy exactly, with card removal
         for every hit,
         double and split hand, and agrees with shuffle-every-round simulations of 1 to 8 decks to within about 0.005%.
-        House edges match published figures (6D S17 DAS 0.41%, H17 0.62%). This version uses the same engine as the Windows
-        app, tested to give identical results. Precision of a simulated win rate is shown as ± one standard error; use more
-        rounds to shrink it. Strategy is total-dependent (by hand total, not exact cards).
+        House edges match published figures (6D S17 DAS 0.41%, H17 0.62%). Precision of a simulated win rate is shown as
+        ± one standard error; use more rounds to shrink it. Strategy is total-dependent (by hand total, not exact cards).
       </p>
     </Card>
 
@@ -86,7 +85,7 @@
           {:else}
             When you save, you choose the folder and the file name.
           {/if}
-          The files also open in the Windows app and in the desktop app for Windows and Mac.
+          The files also open in the desktop app for Windows and Mac.
         </p>
       </Card>
     {:else}

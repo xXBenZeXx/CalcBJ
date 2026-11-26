@@ -2,7 +2,7 @@
 name = "calcbj-engine"
 version = "0.1.0"
 edition = "2024"
-description = "CalcBJ blackjack engine: combinatorial analysis, index generation, simulation and bet-ramp analysis (port of the C# engine in src/Engine)"
+description = "CalcBJ blackjack engine: combinatorial analysis, index generation, simulation and bet-ramp analysis"
 publish = false
 
 [features]
@@ -15,8 +15,9 @@ serde = { version = "1", features = ["derive"], optional = true }
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }
 
-# The comparison tests simulate millions of rounds; unoptimised builds would take minutes.
-[profile.test]
+# The tests (which inherit this) and the fixture writer (`cargo run --example fixtures`) simulate millions of rounds;
+# unoptimised builds would take minutes.
+[profile.dev]
 opt-level = 3
 
 [profile.release]
