@@ -3,8 +3,8 @@
 A tool for card counters: enter the game, pick a count and bet ramp, and get win rate, standard deviation, SCORE, N0,
 risk of ruin, bankroll requirements and optimal bets. Everything is computed on the device; no internet needed.
 
-**Desktop app for Windows and Mac:** the installers (`-setup.exe` for Windows, `.dmg` for Mac) are on the GitHub
-repository's Releases page; see [Apps](#apps).
+**Desktop app for Windows, Mac and Linux:** the installers (`-setup.exe` for Windows, `.dmg` for Mac, `.AppImage`,
+`.deb` or `.rpm` for Linux) are on the GitHub repository's Releases page; see [Apps](#apps).
 
 **Android app:** `CalcBJ_<version>_android-arm64.apk` on the same Releases page; see [Phone apps](#phone-apps).
 
@@ -93,16 +93,18 @@ November 2026; its code is in the git history up to commit `d24b7e2`.
 
 ## Apps
 
-The desktop app for Windows and Mac, the Android app and the web app are one program: the engine in Rust compiled to
-WebAssembly, and the interface in TypeScript and Svelte. The desktop and phone apps wrap it with Tauri, and GitHub
-Actions builds the installers and the APK. In a browser it is a web app that can be installed and then works offline.
+The desktop app for Windows, Mac and Linux, the Android app and the web app are one program: the engine in Rust
+compiled to WebAssembly, and the interface in TypeScript and Svelte. The desktop and phone apps wrap it with Tauri, and
+GitHub Actions builds the installers and the APK. In a browser it is a web app that can be installed and then works
+offline.
 
 * `web\engine`: the engine. See `web\engine\README.md`.
 * `web\engine-wasm`: its WebAssembly interface.
 * `web\app`: the interface, with all nine pages. Simulations run on every CPU thread in Web Workers. Run it with
   `npm install` and `npm run dev` in `web\app`; see `web\app\README.md`.
-* `web\app\src-tauri`: the desktop app (Windows installer, Mac `.dmg`), built by `.github\workflows\desktop.yml`, and
-  the phone apps (the Android APK; the iPhone app is prepared), built by `.github\workflows\phone.yml`.
+* `web\app\src-tauri`: the desktop app (Windows installer, Mac `.dmg`, Linux `.AppImage`, `.deb` and `.rpm`), built by
+  `.github\workflows\desktop.yml`, which also starts the Linux app once on a virtual screen as a test, and the phone
+  apps (the Android APK; the iPhone app is prepared), built by `.github\workflows\phone.yml`.
 
 ## Phone apps
 

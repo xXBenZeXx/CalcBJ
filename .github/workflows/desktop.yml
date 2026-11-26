@@ -1,5 +1,6 @@
-# Builds the desktop apps on GitHub's Mac and Windows machines and attaches the installers to the release of the
-# version in web/app/src-tauri/tauri.conf.json (Releases on the repository's page).
+# Builds the desktop apps on GitHub's Mac, Windows and Linux machines and attaches the installers to the release of
+# the version in web/app/src-tauri/tauri.conf.json (Releases on the repository's page). On Linux it also starts the app
+# once, with screenshots in the run's "linux-start-test" artifact.
 name: Desktop apps
 
 on:
@@ -10,13 +11,18 @@ on:
       - "!**/*.md"
       - ".github/workflows/desktop.yml"
   workflow_dispatch:
+    inputs:
+      release:
+        description: Attach the installers to the release (off - only build them and keep them with the run for a week)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
-# A newer push replaces a build still running.
+# A newer push replaces a build of the same branch still running.
 concurrency:
-  group: desktop-apps
+  group: desktop-apps-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -35,9 +41,24 @@ jobs:
             os: windows-latest
             rust-targets: wasm32-unknown-unknown
             args: ""
+          # Built against Ubuntu 22.04's older C library, the Linux packages run on more distributions than 24.04's.
+          - name: Linux
+            os: ubuntu-22.04
+            rust-targets: wasm32-unknown-unknown
+            args: ""
     runs-on: ${{ matrix.os }}
+    env:
+      # A push to main, or a run by hand with "release" on, attaches the installers to the release.
+      RELEASE: ${{ github.event_name == 'push' || inputs.release }}
     steps:
       - uses: actions/checkout@v5
+
+      # WebKitGTK (the system's web view on Linux) and what the AppImage is made with.
+      - name: Install the libraries the Linux app is built with
+        if: matrix.name == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - uses: actions/setup-node@v5
         with:
@@ -65,14 +86,81 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: web/app
-          tagName: v__VERSION__
+          # Without a tag name it only builds.
+          tagName: ${{ env.RELEASE == 'true' && 'v__VERSION__' || '' }}
           releaseName: CalcBJ __VERSION__
           releaseBody: |
-            Download the file for your computer below (under Assets). Both apps work without an internet connection.
+            Download the file for your computer below (under Assets). All of them work without an internet connection.
 
             **Mac** (Apple silicon and Intel, macOS 12 or later): open the `.dmg` file and drag CalcBJ into Applications. The app is not signed with an Apple developer certificate, so the first time macOS won't open it: open System Settings → Privacy & Security, scroll down and click **Open Anyway**.
 
             **Windows** (10 or 11): run the `-setup.exe` file. If Windows says it protected your PC, click **More info** → **Run anyway**. It installs for your user account only, without administrator rights.
+
+            **Linux** (64-bit Intel or AMD): the `.AppImage` runs on most distributions without installing: make it executable (`chmod +x CalcBJ_*.AppImage`) and start it. If it reports that FUSE is missing, install it (`sudo apt install libfuse2`, on Ubuntu 24.04 and later `libfuse2t64`). Or install the `.deb` on Debian, Ubuntu or Mint (`sudo apt install ./CalcBJ_*_amd64.deb`) or the `.rpm` on Fedora or openSUSE (`sudo dnf install ./CalcBJ-*.x86_64.rpm`); these also install the libraries it needs and add CalcBJ to the applications menu.
+
+            **Android**: `CalcBJ_<version>_android-arm64.apk` is added here about half an hour after the others.
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Keep the installers with the run
+        if: env.RELEASE != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: installers-${{ matrix.name }}
+          path: |
+            web/app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            web/app/src-tauri/target/release/bundle/nsis/*-setup.exe
+            web/app/src-tauri/target/release/bundle/appimage/*.AppImage
+            web/app/src-tauri/target/release/bundle/deb/*.deb
+            web/app/src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+          retention-days: 7
+
+      # The AppImage on a virtual screen: it has to start and show the Game rules page with the engine's numbers (the
+      # WebAssembly engine, the rule list from its worker), then run a simulation (F5) on the simulation workers. The
+      # step fails if the app stops or its window stays blank; the screenshots show the rest.
+      - name: Start the Linux app and simulate
+        if: matrix.name == 'Linux'
+        run: |
+          sudo apt-get install -y xvfb xdotool imagemagick
+          out="$RUNNER_TEMP/linux-start"
+          mkdir -p "$out"
+          app=$(ls "$PWD"/web/app/src-tauri/target/release/bundle/appimage/*.AppImage | head -n 1)
+          chmod +x "$app"
+          # The AppImage unpacks itself instead of mounting with FUSE, and WebKit draws without the GPU buffers a
+          # virtual screen doesn't have.
+          export DISPLAY=:99 APPIMAGE_EXTRACT_AND_RUN=1 WEBKIT_DISABLE_DMABUF_RENDERER=1
+          Xvfb :99 -screen 0 1400x1000x24 &
+          sleep 2
+          "$app" > "$out/app.log" 2>&1 &
+          pid=$!
+          alive() {
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "::error::CalcBJ stopped by itself $1"
+              cat "$out/app.log"
+              exit 1
+            fi
+          }
+          sleep 30
+          import -window root "$out/1-start.png"
+          alive "after starting"
+          win=$(timeout 20 xdotool search --sync --onlyvisible --name '^CalcBJ$' | head -n 1)
+          if [ -z "$win" ]; then echo "::error::No CalcBJ window"; exit 1; fi
+          timeout 10 xdotool windowfocus --sync "$win" key F5
+          sleep 20
+          import -window root "$out/2-simulation.png"
+          alive "during the simulation"
+          spread=$(convert "$out/1-start.png" -format '%[fx:standard_deviation]' info:)
+          echo "Colour spread of the start screenshot: $spread"
+          if ! awk -v s="$spread" 'BEGIN { exit !(s > 0.02) }'; then echo "::error::The window is blank"; exit 1; fi
+          cat "$out/app.log"
+
+      - name: Keep the screenshots of the start
+        if: matrix.name == 'Linux' && !cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-start-test
+          path: ${{ runner.temp }}/linux-start
+          if-no-files-found: ignore
+          retention-days: 14

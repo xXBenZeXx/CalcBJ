@@ -85,13 +85,13 @@
           {:else}
             When you save, you choose the folder and the file name.
           {/if}
-          The files also open in the desktop app for Windows and Mac.
+          The files also open in the desktop app for Windows, Mac and Linux.
         </p>
       </Card>
     {:else}
       <Card title="Install and offline use">
         <p>
-          <b>Windows, Mac, Android:</b> in Chrome or Edge, choose Install (in the address bar, the browser menu, or
+          <b>Windows, Mac, Linux, Android:</b> in Chrome or Edge, choose Install (in the address bar, the browser menu, or
           “Install app” in CalcBJ's menu). <b>iPhone and iPad:</b> in Safari, tap Share, then Add to Home Screen.
         </p>
         <p>

@@ -44,7 +44,7 @@ pub fn run() {
         .expect("CalcBJ could not start");
 }
 
-/// Windows and Mac: the dialogs return paths, which std::fs reads and writes.
+/// Windows, Mac and Linux: the dialogs return paths, which std::fs reads and writes.
 #[cfg(desktop)]
 mod files {
     use std::path::Path;

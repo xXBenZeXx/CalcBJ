@@ -2,7 +2,7 @@
 
 A Svelte interface for the Rust engine (`../engine`), which runs as WebAssembly. The same pages ship three ways:
 
-* **Desktop app** for Mac and Windows (`src-tauri`): a normal app with an installer, everything inside it, no
+* **Desktop app** for Windows, Mac and Linux (`src-tauri`): a normal app with an installer, everything inside it, no
   internet needed. See [Desktop app](#desktop-app).
 * **Phone app** for Android (also `src-tauri`), an APK built and tested by GitHub Actions; an iPhone app is prepared.
   See [Phone apps](#phone-apps).
@@ -91,15 +91,18 @@ Simulations only run when you press Run (F5); Esc stops. On a Ryzen 7 9800X3D (1
 ## Desktop app
 
 `src-tauri` wraps the pages in a window of their own with [Tauri](https://tauri.app) 2: the system's web view
-(WebView2 on Windows, WebKit on Mac) shows `dist/` built with `vite build --mode desktop` (`npm run build:desktop`),
+(WebView2 on Windows, WebKit on Mac, WebKitGTK on Linux) shows `dist/` built with `vite build --mode desktop`
+(`npm run build:desktop`),
 which sets `__DESKTOP__`. That build opens and saves scenario files through the system's dialogs (two commands in
 `src-tauri/src/lib.rs`, called from `src/lib/desktop.ts`) and has no service worker. The engine and the simulation
 workers are the same WebAssembly as in the browser. The same project builds the phone apps ([below](#phone-apps)); the
 desktop app keeps its identifier `com.calcbj.desktop`, and with it its data folder.
 
 The installers are built by GitHub Actions (`.github/workflows/desktop.yml`) on every push to `main` that changes
-`web/`, or by hand under Actions → Desktop apps → Run workflow. Both are attached to the release named after the
-version in `src-tauri/tauri.conf.json` (the repository's Releases page):
+`web/`, or by hand under Actions → Desktop apps → Run workflow. They are attached to the release named after the
+version in `src-tauri/tauri.conf.json` (the repository's Releases page). A run by hand with "release" switched off
+only builds them and keeps them with the run for a week (its `installers-…` artifacts), for trying a branch before it
+is released (`gh workflow run desktop.yml --ref <branch> -f release=false`).
 
 * **Mac**: `CalcBJ_<version>_universal.dmg`, one app for Apple silicon and Intel, macOS 12 or later. It is signed
   ad hoc, not with an Apple developer certificate, so the first launch has to be allowed in System Settings →
@@ -107,10 +110,25 @@ version in `src-tauri/tauri.conf.json` (the repository's Releases page):
 * **Windows**: `CalcBJ_<version>_x64-setup.exe`, installs for the current user without administrator rights.
   SmartScreen warns about the unsigned installer (More info → Run anyway). It uses the WebView2 runtime that comes
   with Windows 10 and 11.
+* **Linux** (x86-64), built on Ubuntu 22.04, so it needs that C library (glibc 2.35) or newer, as in Ubuntu 22.04,
+  Debian 12 and current Fedora.
+  * `CalcBJ_<version>_amd64.AppImage` runs without installing (`chmod +x`, then start it). It brings WebKitGTK and
+    GTK along, but needs FUSE 2 to mount itself (`libfuse2`, on Ubuntu 24.04 and later `libfuse2t64`); without it,
+    `APPIMAGE_EXTRACT_AND_RUN=1` before the command unpacks it instead.
+  * `CalcBJ_<version>_amd64.deb` (Debian, Ubuntu, Mint; `sudo apt install ./CalcBJ_<version>_amd64.deb`) and
+    `CalcBJ-<version>-1.x86_64.rpm` (Fedora, openSUSE; `sudo dnf install ./CalcBJ-<version>-1.x86_64.rpm`) install it
+    with the applications menu entry and pull in WebKitGTK 4.1 from the distribution.
+
+  The data folder is `~/.local/share/com.calcbj.desktop`. After the build, the workflow starts the AppImage on a
+  virtual screen (Xvfb) and takes screenshots after the start and during a simulation started with F5; the run fails
+  if the app stops or its window stays blank. The screenshots and the app's log are in the run's `linux-start-test`
+  artifact. If the window stays white on a computer (some graphics drivers with WebKitGTK),
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` before the command usually helps.
 
 For a new release, raise `version` in `src-tauri/tauri.conf.json` (otherwise the files of the current release are
-replaced). Building locally (`npm run tauri build`) needs the Microsoft C++ Build Tools on Windows or Xcode's
-command line tools on a Mac; this PC has neither, which is why GitHub builds them.
+replaced). Building locally (`npm run tauri build`) needs the Microsoft C++ Build Tools on Windows, Xcode's command
+line tools on a Mac, or on Linux the packages the workflow installs (WebKitGTK 4.1 and others); this PC has none of
+them, which is why GitHub builds them.
 
 The icons in `src-tauri/icons` come from `npm run tauri icon <file.png>` with a 1024 px tile on Apple's icon grid that
 the Windows app's `tools\MakeIcon.cs` drew, except `icon.ico`, which is the Windows app's own icon. New icons: make a

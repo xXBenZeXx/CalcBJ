@@ -25,7 +25,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "dmg"],
+    "targets": ["nsis", "dmg", "deb", "rpm", "appimage"],
     "shortDescription": "Blackjack advantage calculator",
     "longDescription": "Simulate a blackjack game with your count, indices and bet ramp, and get win rate, SCORE, N0, risk of ruin and bankroll requirements.",
     "category": "Utility",
