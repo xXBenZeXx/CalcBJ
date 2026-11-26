@@ -40,6 +40,7 @@ Checks of the maths:
 | `tests/count_model.rs` | the composition of the unseen cards at a count (`ca::regress`, used by the index generation) moves with their tag sum as in random draws of unseen cards, for counts with separate red tags too |
 | `tests/sim.rs`, `threaded_simulation_agrees_with_analysis` | 40 million shuffle-every-round rounds on all threads against the off-the-top analysis |
 | `tests/offtop.rs` (only on request) | 2 billion shuffle-every-round rounds for each of 11 games (1 to 8 decks, peek/ENHC/OBO, LS/ES, RSA/HSA, 6:5, D10-11) against the off-the-top analysis, within 3.5 SE |
+| `tests/results_version.rs` | a fingerprint of the fixtures' simulation results (strategy decisions, seeded tallies) for the current `RESULTS_VERSION` (below) |
 
 Reference results: `examples/fixtures.rs` writes the engine's results to `tests/fixtures/*.json`, and the other tests
 work everything out again and compare. All values agree bit for bit; the tolerances only allow for another
@@ -65,6 +66,15 @@ Without such a change the files come out the same. Leave out `--release`: its li
 of its own, as each test runs on its own thread: the engine keeps some results per thread (dealer probabilities, basic
 strategies), and a few values of the analyses at a count come out a last bit differently after other rules were
 analysed on the same thread.
+
+## Results version
+
+The apps keep simulation results per settings, under a key that ends with `RESULTS_VERSION` (`src/lib.rs`), for
+example `…#spots=3#results=2`. Results stored under an older version (or none: CalcBJ up to 0.1.6) are shown as
+outdated, and Run starts those settings again from zero instead of adding rounds to them. So raise `RESULTS_VERSION`
+with every change that alters what a simulation of the same settings returns. When the fixtures' strategy decisions or
+seeded tallies change, `tests/results_version.rs` fails and says what to set; a change that only moves other numbers
+(an analysis's last bits, texts) leaves it alone.
 
 The C# engine wrote the first fixtures. The Rust engine wrote `ca.json`, `counts.json` and `sim.json` byte for byte
 the same; in `strategy.json` and `analysis.json` 223 values differ from the C# ones in the last bits (at most 3e-15

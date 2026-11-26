@@ -120,6 +120,24 @@ function validSim(d: SimData | null | undefined): d is SimData {
   return !!d && d.rounds > 0 && [d.n, d.sa, d.qa, d.sb, d.qb, d.ab].every((a) => a?.length === NUM_BINS);
 }
 
+/**
+ * A results key ends with the engine's results version ("#results=2", see RESULTS_VERSION in web/engine): a version
+ * whose simulations give other results gets a new number. Keys stored by CalcBJ up to 0.1.6 have none (version 0).
+ */
+const VERSION_MARK = "#results=";
+
+/** The settings part of a results key, without its version. */
+function settingsOf(key: string): string {
+  const at = key.lastIndexOf(VERSION_MARK);
+  return at < 0 ? key : key.slice(0, at);
+}
+
+/** The engine results version a key was stored with; 0 when it has none. */
+function versionOf(key: string): number {
+  const at = key.lastIndexOf(VERSION_MARK);
+  return at < 0 ? 0 : Number(key.slice(at + VERSION_MARK.length)) || 0;
+}
+
 /** The result fields of a Compare entry; an entry without a valid result has them all NaN. */
 const RESULT_FIELDS = [
   "winPerHour", "sdPerHour", "winPer100", "sdPer100", "edgePct", "score", "di", "n0", "hoursN0", "ror", "avgBet",
@@ -227,6 +245,17 @@ class AppState {
   });
 
   simStale = $derived(this.sim !== null && this.sim.key !== this.simKey);
+
+  /**
+   * True when the results on screen are of these settings but were simulated by an older version of CalcBJ, whose
+   * engine gave other results (an older results version in the key). They are stale too, and Run starts from zero.
+   */
+  simOutdated = $derived(
+    this.sim !== null &&
+      this.simKey !== "" &&
+      settingsOf(this.sim.key) === settingsOf(this.simKey) &&
+      versionOf(this.sim.key) < versionOf(this.simKey),
+  );
 
   /**
    * True when the simulation shown was run with another count (or the same count converted differently): its count
@@ -369,10 +398,25 @@ class AppState {
     this.run();
   }
 
-  /** Shows the stored results for these settings, if any (called whenever the settings change). */
+  /**
+   * Shows the stored results for these settings, if any (called whenever the settings change); results an older
+   * version simulated for them only when there are no current ones (they are shown as outdated).
+   */
   showCached(key: string): void {
-    const cached = this.cache.get(key);
+    const cached = this.cache.get(key) ?? this.outdatedFor(key);
     if (cached && this.runningKey !== key && this.sim !== cached) this.sim = cached;
+  }
+
+  /** The newest results an older version of CalcBJ simulated for the settings of `key`, if any are held. */
+  private outdatedFor(key: string): SimData | undefined {
+    const settings = settingsOf(key);
+    const version = versionOf(key);
+    let found: SimData | undefined;
+    for (const d of this.cache.values()) {
+      const v = versionOf(d.key);
+      if (settingsOf(d.key) === settings && v < version && (!found || v > versionOf(found.key))) found = d;
+    }
+    return found;
   }
 
   private start(): void {
@@ -409,9 +453,19 @@ class AppState {
     });
   }
 
-  /** Keeps results for their settings (the larger run wins); sweeps store theirs here too. */
+  /**
+   * Keeps results for their settings (the larger run wins); sweeps store theirs here too. Of results that different
+   * versions of CalcBJ simulated for the same settings only the newest version's are kept, whatever their rounds.
+   */
   remember(d: SimData): void {
     if (!d.key || d.rounds <= 0) return;
+    const settings = settingsOf(d.key);
+    const version = versionOf(d.key);
+    for (const other of [...this.cache.values()]) {
+      if (other.key === d.key || settingsOf(other.key) !== settings) continue;
+      if (versionOf(other.key) > version) return;
+      this.cache.delete(other.key);
+    }
     const old = this.cache.get(d.key);
     if (old && old.rounds > d.rounds) return;
     this.cache.delete(d.key);
@@ -654,7 +708,7 @@ class AppState {
       for (const d of sims) if (d?.key && validSim(d)) this.cache.set(d.key, d);
       this.cacheCount = this.cache.size;
     }
-    this.sim = this.cache.get(this.simKey) ?? null;
+    this.sim = this.cache.get(this.simKey) ?? this.outdatedFor(this.simKey) ?? null;
   }
 }
 

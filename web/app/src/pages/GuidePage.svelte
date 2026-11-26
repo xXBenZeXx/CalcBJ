@@ -20,6 +20,8 @@
           <b>Simulation</b> — press {touchScreen ? "Run simulation" : "Run (F5)"}. Each round is dealt from a real shoe to
           every spot; your seat's results are stored for every count value. Simulations only run when you press Run,
           {__MOBILE__ ? "on the number of CPU threads set on that page." : "on every CPU thread of this device."}
+          Results simulated with an older version of CalcBJ are marked as such, and Run then starts those settings again
+          from zero instead of adding to them.
           {#if __MOBILE__}
             A run pauses while CalcBJ is in the background and carries on when you come back; if the app is closed in
             between, the rounds simulated so far are kept.

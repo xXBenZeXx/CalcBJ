@@ -230,9 +230,10 @@ fn handle(req: &Value) -> Result<Value, String> {
         }
         // Ten exact evaluations (about a second): the app asks for them in a worker and passes them to countInfo.
         "effectsOfRemoval" => Ok(json!(effects_of_removal(&rules(req)?))),
+        // The settings and the engine's results version: results stored under another version are outdated.
         "simKey" => {
             let key = strategy::key_of(&rules(req)?, &count(req)?, &config(req)?);
-            Ok(json!(format!("{key}#spots={}", spots(req)?)))
+            Ok(json!(format!("{key}#spots={}#results={RESULTS_VERSION}", spots(req)?)))
         }
         "strategy" => {
             let (r, cs, sc) = (rules(req)?, count(req)?, config(req)?);
@@ -373,6 +374,16 @@ mod tests {
         // Missing fields take the defaults.
         let s17 = ok(json!({ "op": "houseEdge", "rules": { "h17": false } })).as_f64().unwrap();
         assert_eq!(s17, house_edge_off_top(&Rules { h17: false, ..Rules::default() }));
+    }
+
+    /// The app tells current results from outdated ones by the version at the end of the key.
+    #[test]
+    fn sim_key_ends_with_the_results_version() {
+        let (r, cs, sc) = defaults();
+        let key = ok(json!({ "op": "simKey", "rules": r, "count": cs, "config": sc, "spots": 3 }));
+        let key = key.as_str().expect("a key");
+        assert!(key.ends_with(&format!("#spots=3#results={RESULTS_VERSION}")), "{key}");
+        assert_eq!(key.matches("#results=").count(), 1, "{key}");
     }
 
     #[test]

@@ -48,6 +48,8 @@
     if (app.simOfAnotherCount)
       return { text: "The last simulation was run with another count. Run the simulation for these settings.", tone: "info" };
     if (!a) return { text: "The current ramp never bets.", tone: "info" };
+    if (app.simOutdated)
+      return { text: "⚠  Simulated with an older version of CalcBJ; run the simulation for this version's charts.", tone: "warn" };
     if (app.simStale)
       return { text: "⚠  Settings changed since the last simulation; charts show the previous settings.", tone: "warn" };
     return null;

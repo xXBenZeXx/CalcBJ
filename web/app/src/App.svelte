@@ -392,7 +392,11 @@
 
     <footer class="statusbar">
       <span class:warn={app.simStale}>
-        {status}{app.simStale ? `  ·  ⚠ settings changed since this simulation — re-run${touchScreen ? "" : " (F5)"}` : ""}
+        {status}{app.simOutdated
+          ? `  ·  ⚠ simulated with an older version of CalcBJ — re-run${touchScreen ? "" : " (F5)"}`
+          : app.simStale
+            ? `  ·  ⚠ settings changed since this simulation — re-run${touchScreen ? "" : " (F5)"}`
+            : ""}
       </span>
       <span class="sim-line">{simLine}</span>
     </footer>

@@ -7,6 +7,14 @@
 //! (Strategy.cs), [`sim`] (Simulator.cs) and [`analysis`] (Analysis.cs); "C#:" in a comment names the original. The
 //! tests compare every result with the fixtures in `tests/fixtures`, which `examples/fixtures.rs` writes.
 
+/// Which simulation results this engine gives. The apps keep results per settings under a key that ends with this
+/// version (`#results=2`), treat results stored under an older one as outdated and start a new run from zero instead of
+/// adding to them. Raise it with every change that alters what a simulation of the same settings returns (strategy
+/// tables, the simulator); `tests/results_version.rs` fails when the fixtures' results change, as the reminder. Keys
+/// without a version (stored by CalcBJ up to 0.1.6) count as older; version 2 is the engine since 0.1.4's exact basic
+/// strategy.
+pub const RESULTS_VERSION: u32 = 2;
+
 pub mod analysis;
 pub mod ca;
 mod dealer;

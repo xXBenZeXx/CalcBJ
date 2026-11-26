@@ -96,7 +96,12 @@
   </div>
 
   <div class="col">
-    {#if d && app.simStale}
+    {#if d && app.simOutdated}
+      <Banner
+        tone="warn"
+        text="⚠  These results were simulated with an older version of CalcBJ, which worked them out a little differently. Run simulation starts these settings again from zero instead of adding to them."
+      />
+    {:else if d && app.simStale}
       <Banner
         tone="warn"
         text={`⚠  Settings have changed since this simulation. Results below are for: ${d.rulesText} · ${d.countText} · ${d.strategyText}`}

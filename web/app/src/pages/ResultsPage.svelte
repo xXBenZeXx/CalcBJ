@@ -28,6 +28,13 @@
           (touchScreen ? "Press Run simulation for these settings." : "Press F5 to simulate these settings."),
         tone: "warn",
       };
+    if (app.simOutdated)
+      return {
+        text:
+          "⚠  These results were simulated with an older version of CalcBJ. " +
+          (touchScreen ? "Press Run simulation for this version's results." : "Press F5 for this version's results."),
+        tone: "warn",
+      };
     if (app.simStale)
       return {
         text:

@@ -64,9 +64,11 @@ class Sweep {
 
   // The max-bet sweep works on the simulation in hand: say so when that was run with other settings.
   note = $derived(
-    this.parameter === 4 && app.simStale
-      ? "⚠  The settings changed since the last simulation: these points are for the settings it was run with."
-      : NOTES[this.parameter],
+    this.parameter === 4 && app.simOutdated
+      ? "⚠  The last simulation was run with an older version of CalcBJ: these points use its results."
+      : this.parameter === 4 && app.simStale
+        ? "⚠  The settings changed since the last simulation: these points are for the settings it was run with."
+        : NOTES[this.parameter],
   );
 
   setParameter(p: number): void {
