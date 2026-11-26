@@ -1,5 +1,5 @@
 # Builds the phone apps (Tauri 2 mobile, from the same web/app/src-tauri project as the desktop apps) on GitHub's
-# machines. README.md (Phone apps) explains installing, updating and the signing key.
+# machines. docs/development.md (Phone apps) explains installing, updating and the signing key.
 #
 # Android:
 #   - On every push to a branch other than main that changes web/: an APK is built and tested on an emulator
@@ -204,7 +204,7 @@ jobs:
             # on 16 KB page boundaries.
             "$tools/zipalign" -f -P 16 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
             # The password goes in through the environment, never on a command line. One password for the keystore
-            # and the key (README.md, Phone apps).
+            # and the key (docs/development.md, Phone apps).
             "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" \
               --ks-pass env:ANDROID_KEY_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
               --out "$apk" "$RUNNER_TEMP/aligned.apk"
@@ -216,7 +216,7 @@ jobs:
           else
             apk="$RUNNER_TEMP/CalcBJ_${version}_android-arm64-unsigned.apk"
             cp "$unsigned" "$apk"
-            echo "::warning::The release APK is NOT signed: phones won't install it, and it is not attached to the release. Add the repository secrets ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD (README.md, Phone apps)."
+            echo "::warning::The release APK is NOT signed: phones won't install it, and it is not attached to the release. Add the repository secrets ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD (docs/development.md, Phone apps)."
             certificate="none (not signed)"
             signed=false
           fi
@@ -361,7 +361,7 @@ jobs:
           SIGNED: ${{ needs.android.outputs.signed }}
         run: |
           if [ "$SIGNED" != true ]; then
-            echo "::warning::The APK is not signed, so it is not attached to $TAG: add the signing secrets (README.md, Phone apps)."
+            echo "::warning::The APK is not signed, so it is not attached to $TAG: add the signing secrets (docs/development.md, Phone apps)."
             echo "attach=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -455,7 +455,7 @@ jobs:
           APP_ID: ${{ vars.APP_STORE_APP_ID }}
         run: |
           if [ -z "$API_KEY_ID" ] || [ -z "$API_ISSUER" ] || [ -z "$API_PRIVATE_KEY" ] || [ -z "$TEAM" ] || [ -z "$APP_ID" ]; then
-            echo "::error::TestFlight needs the secrets APPLE_API_KEY_ID, APPLE_API_ISSUER and APPLE_API_PRIVATE_KEY and the variables APPLE_DEVELOPMENT_TEAM and APP_STORE_APP_ID (README.md, Phone apps)."
+            echo "::error::TestFlight needs the secrets APPLE_API_KEY_ID, APPLE_API_ISSUER and APPLE_API_PRIVATE_KEY and the variables APPLE_DEVELOPMENT_TEAM and APP_STORE_APP_ID (docs/development.md, Phone apps)."
             exit 1
           fi
           # altool looks for the key here, named AuthKey_<key id>.p8.
@@ -544,7 +544,7 @@ jobs:
           file="$RUNNER_TEMP/CalcBJ_${VERSION}_ios-unsigned.ipa"
           cp "$IPA" "$file"
           echo "file=$file" >> "$GITHUB_OUTPUT"
-          echo "Unsigned IPA \`$(basename "$file")\` in this run's artifacts: install it with Sideloadly (README.md, Phone apps)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Unsigned IPA \`$(basename "$file")\` in this run's artifacts: install it with Sideloadly (docs/development.md, Phone apps)." >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
         if: env.MODE == 'unsigned'

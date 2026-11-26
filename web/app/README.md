@@ -159,8 +159,8 @@ delete `src-tauri/gen/android` and run it again.
 
 ### On GitHub Actions
 
-`.github/workflows/phone.yml` (when it runs, installing and the signing secrets are in the repository's README, Phone
-apps):
+`.github/workflows/phone.yml` (when it runs and the signing secrets are in `docs/development.md`, Phone apps; installing
+is in the repository's README):
 
 1. **Android build** on Ubuntu 24.04: Java 21, Node 24, Rust with the Android targets, and NDK r29 (r28 or later
    links the native library for 16 KB memory pages); `npm ci`, `node scripts/android-project.mjs`, then
