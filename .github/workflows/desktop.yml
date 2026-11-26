@@ -128,9 +128,8 @@ jobs:
           mkdir -p "$out"
           app=$(ls "$PWD"/web/app/src-tauri/target/release/bundle/appimage/*.AppImage | head -n 1)
           chmod +x "$app"
-          # The AppImage unpacks itself instead of mounting with FUSE, and WebKit draws without the GPU buffers a
-          # virtual screen doesn't have.
-          export DISPLAY=:99 APPIMAGE_EXTRACT_AND_RUN=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 NO_AT_BRIDGE=1
+          # The AppImage unpacks itself instead of mounting with FUSE. No WebKit settings: the app sets what it needs.
+          export DISPLAY=:99 APPIMAGE_EXTRACT_AND_RUN=1 NO_AT_BRIDGE=1
           Xvfb :99 -screen 0 1400x1000x24 &
           sleep 2
           start=$(date +%s)

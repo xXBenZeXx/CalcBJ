@@ -122,12 +122,13 @@ is released (`gh workflow run desktop.yml --ref <branch> -f release=false`).
   The data folder is `~/.local/share/com.calcbj.desktop`. After the build, the workflow starts the AppImage on a
   virtual screen (Xvfb) and takes screenshots after the start and during a simulation started with F5; the run fails
   if the app stops or its window stays blank. The screenshots and the app's log are in the run's `linux-start-test`
-  artifact. If the window stays white on a computer (some graphics drivers with WebKitGTK),
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1` before the command usually helps. Where the system has no OpenGL ES library
-  (`libGLESv2.so.2`, missing in WSL's Ubuntu and some minimal installs), WebKitGTK would stop the app at once, so
-  `src/main.rs` switches it to drawing in software (`WEBKIT_DISABLE_COMPOSITING_MODE`) when that library can't be
-  loaded. On Windows 11 the AppImage also runs in WSL, whose WSLg shows the window:
-  `APPIMAGE_EXTRACT_AND_RUN=1 ./CalcBJ_<version>_amd64.AppImage`.
+  artifact.
+
+  `src/main.rs` sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` unless the user set it: WebKitGTK's DMA-BUF renderer draws
+  through OpenGL ES in the app's own process, and stops the app at once where the system has no `libGLESv2.so.2` (WSL's
+  Ubuntu, some minimal installs) or leaves the window white with some graphics drivers. WebKit's other way of drawing
+  works everywhere and is fast enough for these pages. On Windows 11 the AppImage also runs in WSL, whose WSLg shows
+  the window: `APPIMAGE_EXTRACT_AND_RUN=1 ./CalcBJ_<version>_amd64.AppImage`.
 
 For a new release, raise `version` in `src-tauri/tauri.conf.json` (otherwise the files of the current release are
 replaced). Building locally (`npm run tauri build`) needs the Microsoft C++ Build Tools on Windows, Xcode's command

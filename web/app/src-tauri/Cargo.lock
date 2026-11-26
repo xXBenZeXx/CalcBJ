@@ -228,7 +228,6 @@ dependencies = [
 name = "calcbj-desktop"
 version = "0.1.5"
 dependencies = [
- "libc",
  "serde",
  "tauri",
  "tauri-build",
