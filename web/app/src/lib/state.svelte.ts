@@ -127,13 +127,13 @@ function validSim(d: SimData | null | undefined): d is SimData {
 const VERSION_MARK = "#results=";
 
 /** The settings part of a results key, without its version. */
-function settingsOf(key: string): string {
+export function settingsOf(key: string): string {
   const at = key.lastIndexOf(VERSION_MARK);
   return at < 0 ? key : key.slice(0, at);
 }
 
 /** The engine results version a key was stored with; 0 when it has none. */
-function versionOf(key: string): number {
+export function versionOf(key: string): number {
   const at = key.lastIndexOf(VERSION_MARK);
   return at < 0 ? 0 : Number(key.slice(at + VERSION_MARK.length)) || 0;
 }

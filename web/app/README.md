@@ -18,7 +18,14 @@ npm install
 npm run dev        # builds the engine, then serves http://localhost:5173
 npm run build      # type-checks and builds static files into dist/
 npm run preview    # serves dist/ at http://localhost:4173 (with the offline support, unlike npm run dev)
+npm test           # builds the engine, then runs the unit tests in tests/
 ```
+
+The unit tests (Vitest on a jsdom page, `tests/*.test.ts`, about 2 seconds) cover number formatting and reading
+(`format.test.ts`), `.bjev` files (`scenario.test.ts`: the Windows app's sample opens and writes back the same) and the
+rules for stored results with the real engine (`results.test.ts`: older versions' results show as outdated, are never
+added to and never replace newer ones). `tests/engine.ts` loads `src/lib/engine/calcbj.wasm` and starts the app's state
+afresh with given stored data. The desktop workflow runs them before it builds any installer.
 
 `npm run dev` and `npm run build` first build `../engine-wasm` with cargo (Rust with the `wasm32-unknown-unknown`
 target) and copy it to `src/lib/engine/calcbj.wasm`.
@@ -49,7 +56,7 @@ files. In the browser, saving downloads the file. The apps use their own Rust co
 system's "Save to" screen (any folder and name) and its file picker; on the iPhone the app's Documents folder, which
 the Files app shows as On My iPhone › CalcBJ, and the Files picker for opening.
 
-`tests/fixtures/windows-sample.bjev` was saved by the Windows app; it has to keep opening. On the dev server,
+`tests/fixtures/windows-sample.bjev` was saved by the Windows app; `tests/scenario.test.ts` checks that it keeps opening. On the dev server,
 `window.calcbj` has `scenarioText()` and `openScenarioText(text, name)` for tests without the file picker.
 
 ## Installing and offline use

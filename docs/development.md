@@ -28,6 +28,7 @@ cargo test                                            # the engine's checks, abo
 cargo test --test offtop -- --ignored --nocapture     # the long simulations, about 2 minutes
 cd ..\app
 npm install
+npm test                                              # the app's unit tests, a few seconds
 npm run dev                                           # the app in the browser at http://localhost:5173
 ```
 
@@ -36,9 +37,9 @@ npm run dev                                           # the app in the browser a
 1. Raise the version in `web/app/src-tauri/tauri.conf.json`, `web/app/src-tauri/Cargo.toml`, the `calcbj-desktop`
    entry of `web/app/src-tauri/Cargo.lock`, and with `npm version <version> --no-git-tag-version` in `web/app`. The
    same version again replaces the files of its release.
-2. Commit to `main` and push. "Desktop apps" (`desktop.yml`) builds the Mac, Windows and Linux installers and publishes
-   the release `v<version>`; about 25 minutes later "Phone apps" (`phone.yml`) has built, tested and attached the signed
-   APK.
+2. Commit to `main` and push. "Desktop apps" (`desktop.yml`) runs the app's unit tests, then builds the Mac, Windows
+   and Linux installers and publishes the release `v<version>` (failing tests stop it before anything is built); about
+   25 minutes later "Phone apps" (`phone.yml`) has built, tested and attached the signed APK.
 3. To try a branch first without releasing anything: `gh workflow run desktop.yml --ref <branch> -f release=false`
    keeps the installers with the run for a week.
 

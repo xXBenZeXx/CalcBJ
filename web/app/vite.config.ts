@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -122,6 +123,10 @@ export default defineConfig(({ mode }) => {
       __IOS__: JSON.stringify(mode === "ios"),
     },
     worker: { format: "es" },
+    // The unit tests (npm test, tests/*.test.ts) run Svelte's browser code on a jsdom page, which has localStorage and
+    // DOMParser.
+    resolve: process.env.VITEST ? { conditions: ["browser"] } : undefined,
+    test: { environment: "jsdom", include: ["tests/**/*.test.ts"] },
     // The iPhone app supports iOS 16 (src-tauri/tauri.ios.conf.json), whose WebKit lacks a few ES2022 features.
     build: { target: mode === "ios" ? ["es2022", "safari16"] : "es2022" },
     server: {
